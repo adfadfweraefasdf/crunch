@@ -256,6 +256,7 @@ footer#notes b{color:#8496ac;font-weight:600}
    width sized for three digits so a game sitting still for 100+ seconds cannot
    push the buttons around. */
 #boardView .lcell{display:flex;align-items:center;gap:5px;justify-content:flex-end;flex-wrap:nowrap}
+#boardView .lcell .dage.stuck{color:var(--hot)}
 #boardView .lcell .dage{font-style:normal;font:600 9px var(--mono);color:var(--dimmer);
     width:30px;text-align:right;flex:none}
 #boardView .tsite{color:inherit;text-decoration:none;border-bottom:1px dotted var(--dimmer)}
@@ -652,6 +653,9 @@ footer#notes b{color:#8496ac;font-weight:600}
   <label>Weight by rank + spread<input type="checkbox" id="useComp"></label>
   <label>Crunch spread on the heat strip (min)<input type="number" id="crunch" min="3" max="30"></label>
   <label>Minimum window to bother with (min)<input type="number" id="lunch" min="15" max="180" step="15" value="30"></label>
+  <div class="hint" style="grid-column:1/-1">Direct game checks: <span id="directStat">idle</span>.
+    Late and stuck games are also checked one at a time against ESPN's small per-game record,
+    because the full scoreboard can lag the broadcast by minutes. The fresher answer wins.</div>
   <div class="hint" style="grid-column:1/-1">Learned pace: <span id="calStat">no samples yet</span>.
     Every game this browser watches reach 5:00 of the fourth, and every game it watches finish,
     adjusts that network's estimate — the 5:00 point and the final separately, each clamped to ±12%.
@@ -1319,6 +1323,156 @@ var HUB = (function () {
   }
   function emit() { for (var i = 0; i < subs.length; i++) { try { subs[i](live); } catch (e) {} } }
 
+  /* --------------------------- direct lane ---------------------------
+     The scoreboard is one enormous response — every FBS game with its leaders,
+     the full odds book, ticket listings and weather — and a game inside it can sit
+     frozen for minutes after the real clock has moved. For the handful of games
+     that matter, the page also asks ESPN's per-game status record directly: a few
+     hundred bytes each. The fresher of the two wins; the scoreboard is never
+     allowed to walk a game backwards past what the direct check already saw.
+
+     UNVERIFIED from here, and measured by the page instead: whether this endpoint
+     answers browser requests, and that its shape is {clock, displayClock, period,
+     type{state,name,shortDetail}} for status and {value|displayValue} for a
+     score. Anything that does not match is ignored field by field, and Settings
+     reports whether the lane is working. */
+  var CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/";
+  var DIRECT = {};                 // event id -> {status, scores:{teamId:n}, at}
+  var DSTAT = { ok: 0, fail: 0, lastOk: 0, lastErr: "", blocked: false, blockedAt: 0 };
+  var DLAST = {};                  // event id -> last direct request time
+  var SEEN = {};                   // event id -> {sig, since}: when the scoreboard last moved
+  var D_MIN_GAP = 10000, D_MAX_PER_CYCLE = 8, D_STALE = 45000;
+
+  function statusOf(e) {
+    var c = e && e.competitions && e.competitions[0];
+    return (c && c.status) || (e && e.status) || null;
+  }
+  /* how far along a game is, as one number: state, then period, then clock run */
+  function progress(st) {
+    if (!st) return -1;
+    var ty = st.type || {}, rank = ty.state === "post" ? 2 : ty.state === "in" ? 1 : 0;
+    var per = typeof st.period === "number" ? st.period : 0;
+    var secs = clockOf(st);
+    return rank * 1e6 + per * 1e4 + (secs == null ? 0 : Math.max(0, 900 - secs));
+  }
+  function evSig(e) {
+    var st = statusOf(e) || {}, c = (e.competitions && e.competitions[0]) || {};
+    var sc = (c.competitors || []).map(function (x) { return x.score; }).join("-");
+    return [(st.type || {}).state, st.period, st.displayClock, sc].join("|");
+  }
+  function leagueSlug(sport) { return sport === "nfl" ? "nfl" : "college-football"; }
+
+  /* Overlay whatever the direct lane knows onto the scoreboard's events, in place,
+     but only where it is AHEAD. Returns how many events it changed. */
+  function applyDirect(list) {
+    var changed = 0;
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i].e, d = DIRECT[e.id];
+      if (!d || !d.status) continue;
+      var c = e.competitions && e.competitions[0];
+      if (!c) continue;
+      var cur = statusOf(e);
+      if (progress(d.status) > progress(cur)) {
+        var merged = {};
+        for (var k in cur) merged[k] = cur[k];
+        if (d.status.clock != null) merged.clock = d.status.clock;
+        if (d.status.displayClock != null) merged.displayClock = d.status.displayClock;
+        if (d.status.period != null) merged.period = d.status.period;
+        if (d.status.type) merged.type = d.status.type;
+        c.status = merged; if (e.status) e.status = merged;
+        e.__direct = d.at; changed++;
+      }
+      /* scores ride with a status that is at least as new as the scoreboard's */
+      if (d.scores && progress(d.status) >= progress(statusOf(e))) {
+        (c.competitors || []).forEach(function (x) {
+          var v = d.scores[String(x.id)];
+          if (v != null && String(x.score) !== String(v)) { x.score = String(v); e.__direct = d.at; changed++; }
+        });
+      }
+    }
+    return changed;
+  }
+
+  /* which games to check directly this cycle: stuck ones first, then the latest */
+  function directCandidates(list, now) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i].e, st = statusOf(e);
+      if (!st || (st.type || {}).state !== "in") continue;
+      var sig = evSig(e), s = SEEN[e.id];
+      if (!s || s.sig !== sig) SEEN[e.id] = s = { sig: sig, since: now };
+      var per = st.period || 0, secs = clockOf(st);
+      var rem = per > 4 ? 0 : (secs == null ? null : secs + (4 - per) * 900);
+      var halftime = /HALF/i.test(((st.type || {}).name || "") + " " + ((st.type || {}).shortDetail || ""));
+      if (halftime) continue;
+      var stale = now - s.since > D_STALE;
+      var late = rem != null && rem <= 900;             // fourth quarter or OT
+      if (!stale && !late) continue;
+      if (DLAST[e.id] && now - DLAST[e.id] < D_MIN_GAP) continue;
+      out.push({ item: list[i], score: (stale ? 0 : 1e5) + (rem == null ? 5e4 : rem) });
+    }
+    out.sort(function (a, b) { return a.score - b.score; });
+    return out.slice(0, D_MAX_PER_CYCLE).map(function (x) { return x.item; });
+  }
+
+  function getJSON(url) {
+    return timedFetch(url + (url.indexOf("?") === -1 ? "?" : "&") + "_=" + Date.now(), 6000, { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  }
+  function numOr(x) {
+    if (x == null) return null;
+    var v = typeof x === "number" ? x : Number(String(x).trim());
+    return isFinite(v) ? v : null;
+  }
+  function directCheck(it) {
+    var e = it.e, c = (e.competitions && e.competitions[0]) || {};
+    var base = CORE + leagueSlug(it.sport) + "/events/" + e.id + "/competitions/" + (c.id || e.id);
+    DLAST[e.id] = Date.now();
+    var teams = (c.competitors || []).map(function (x) { return String(x.id); }).filter(Boolean);
+    return Promise.all([
+      getJSON(base + "/status"),
+      Promise.all(teams.map(function (tid) {
+        return getJSON(base + "/competitors/" + tid + "/score")
+          .then(function (j) { return [tid, numOr(j && (j.value != null ? j.value : j.displayValue))]; })
+          .catch(function () { return [tid, null]; });
+      }))
+    ]).then(function (r) {
+      var st = r[0] || {};
+      var ty = st.type && typeof st.type === "object" ? st.type : null;
+      /* validate before trusting: a status with no usable period or state is ignored */
+      if (typeof st.period !== "number" || !ty || !ty.state) throw new Error("unexpected status shape");
+      var scores = {}, any = false;
+      r[1].forEach(function (p) { if (p[1] != null) { scores[p[0]] = p[1]; any = true; } });
+      DIRECT[e.id] = {
+        status: { clock: numOr(st.clock), displayClock: typeof st.displayClock === "string" ? st.displayClock : null,
+                  period: st.period, type: ty },
+        scores: any ? scores : null, at: Date.now()
+      };
+      DSTAT.ok++; DSTAT.lastOk = Date.now(); DSTAT.blocked = false;
+      return true;
+    }).catch(function (err) {
+      DSTAT.fail++; DSTAT.lastErr = err && err.message ? err.message : String(err);
+      /* a fetch that fails before any success is almost always CORS */
+      if (!DSTAT.ok && /fetch|network|cors|load failed/i.test(DSTAT.lastErr)) {
+        DSTAT.blocked = true; DSTAT.blockedAt = Date.now();
+      }
+      return false;
+    });
+  }
+  var dInFlight = false;
+  function runDirect() {
+    if (dInFlight || !live.raw || !live.raw.length) return;
+    /* a failure before any success is probably CORS, so stop hammering — but try
+       again in five minutes, since it could as easily have been one dropped packet */
+    if (DSTAT.blocked) { if (Date.now() - DSTAT.blockedAt < 300000) return; DSTAT.blocked = false; }
+    var list = directCandidates(live.raw, Date.now());
+    if (!list.length) return;
+    dInFlight = true;
+    Promise.all(list.map(directCheck)).then(function () {
+      if (applyDirect(live.raw)) emit();          // repaint now, not at the next scoreboard poll
+    }).finally(function () { dInFlight = false; });
+  }
+
   var inFlightP = null, queued = false;
   function refresh() {
     if (inFlight) { queued = true; return inFlightP || Promise.resolve(live); }
@@ -1345,10 +1499,12 @@ var HUB = (function () {
     }
     inFlightP = Promise.all(jobs).then(function (res) {
       live.raw = dedupe(res); live.at = Date.now(); live.err = null;
+      applyDirect(live.raw);                  // never let a stale scoreboard walk a game backwards
     }).catch(function (e) {
       live.err = e && e.message ? e.message : String(e);
     }).finally(function () {
       inFlight = false; inFlightP = null; emit();
+      runDirect();
       if (queued) { queued = false; refresh(); }
     });
     return inFlightP;
@@ -1788,6 +1944,10 @@ var lucky=q=>"https://duckduckgo.com/?q="+encodeURIComponent(q);
     localYMD: localYMD,
     pace: function (fn) { paceFn = fn; },
     hot: function (fn) { hotFn = fn; },
+    directStatus: function () { return { ok: DSTAT.ok, fail: DSTAT.fail, lastOk: DSTAT.lastOk,
+      lastErr: DSTAT.lastErr, blocked: DSTAT.blocked, tracked: Object.keys(DIRECT).length }; },
+    _direct: { applyDirect: applyDirect, directCandidates: directCandidates, progress: progress,
+      DIRECT: DIRECT, SEEN: SEEN, DLAST: DLAST, directCheck: directCheck, DSTAT: DSTAT },
     on: function (fn) { subs.push(fn); if (live.at || live.err) fn(live); },
     refresh: refresh, restart: loop, state: function () { return live; },
     start: function (ymd) {
@@ -2814,6 +2974,17 @@ function airStatus(){
   el.textContent=txt+(HUB.fetchMode?` · fetch: ${HUB.fetchMode()}`:"");
   el.className="airstat "+(a.status==="ok"?"ok":on&&(a.status==="blocked"||a.status==="timeout"||a.status==="empty")?"bad":"");
 }
+/* is the direct lane actually working in this browser? */
+function directStat(){
+  const el=document.getElementById("directStat");if(!el||!HUB.directStatus)return;
+  const d=HUB.directStatus(),ago=d.lastOk?Math.round((Date.now()-d.lastOk)/1000):null;
+  el.textContent=d.blocked?"unavailable from this page ("+d.lastErr+") — retrying in 5 min"
+    :d.ok?`working — ${d.ok} checks, last ${ago}s ago`+(d.fail?`, ${d.fail} failed`:"")
+    :d.fail?`not yet working — ${d.lastErr}`
+    :"idle — nothing late or stuck to check yet";
+  el.style.color=d.blocked?"var(--live)":d.ok?"#3fbf7f":"";
+}
+setInterval(directStat,3000);
 function calStatus(){
   const el=document.getElementById("calStat");if(!el)return;
   const rows=(typeof calSummary==="function")?calSummary():[];
@@ -3567,8 +3738,18 @@ function renderStatus() {
   var ds = document.querySelectorAll('.dage');
   var now = Date.now();
   for (var d2 = 0; d2 < ds.length; d2++) {
-    var t0 = sigTimes[ds[d2].dataset.for];
-    ds[d2].textContent = t0 ? 'Δ' + Math.max(0, Math.round((now - t0) / 1000)) + 's' : '';
+    var id = ds[d2].dataset.for, t0 = sigTimes[id];
+    var sec = t0 ? Math.max(0, Math.round((now - t0) / 1000)) : null;
+    ds[d2].textContent = sec == null ? '' : 'Δ' + sec + 's';
+    /* 90 seconds without the clock or score moving, in a live game that is not at
+       halftime, is long enough that the feed may be behind the broadcast */
+    var g2 = null;
+    for (var gi = 0; gi < games.length; gi++) if (games[gi].id === id) { g2 = games[gi]; break; }
+    var stuck = sec != null && sec >= 90 && g2 && g2.state === 'in' && g2.periodLabel !== 'HALF';
+    ds[d2].classList.toggle('stuck', !!stuck);
+    ds[d2].title = stuck
+      ? 'Nothing has moved in the feed for ' + sec + 's — ESPN may be behind the broadcast. The page is checking this game directly.'
+      : 'Seconds since this game last moved in the feed';
   }
 }
 
@@ -3982,7 +4163,7 @@ HUB.start();
     /* --- 1. everything the tests need is actually registered --- */
     ["project", "effSec", "SPORT", "normalize", "rowHTML", "parseEvent", "noCal", "CRUNCH_EG", "onLinear"]
       .forEach(function (k) { check("wiring", "__FC." + k, F[k] !== undefined); });
-    ["core", "teamOf", "clockOf", "anyLinear", "teamSite", "isCrunch", "regRemaining", "bankLine"]
+    ["core", "teamOf", "clockOf", "anyLinear", "teamSite", "isCrunch", "regRemaining", "bankLine", "directStatus"]
       .forEach(function (k) { check("wiring", "HUB." + k, H && typeof H[k] === "function"); });
 
     /* --- 2. calibration: the fitted numbers, with learning switched off --- */
@@ -4168,6 +4349,56 @@ HUB.start();
         return { ok: Math.abs(F.project(cbs, 0, 3300).end - before) < 0.01 };
       });
     });
+
+    /* --- 11. direct lane: a fresher per-game answer wins, a staler one never does --- */
+    if (H && H._direct) (function () {
+      var D = H._direct;
+      function evt(id, per, clock, hs, as) {
+        return { e: { id: id, competitions: [{ id: id,
+          status: { period: per, displayClock: clock, type: { state: "in", name: "STATUS_IN_PROGRESS" } },
+          competitors: [{ id: "h", score: String(hs) }, { id: "a", score: String(as) }] }] }, sport: "cfb" };
+      }
+      function st(per, clock, state) {
+        var p = clock.split(":"), secs = (+p[0]) * 60 + (+p[1]);
+        return { clock: secs, displayClock: clock, period: per, type: { state: state || "in" } };
+      }
+      var saved = {}; for (var k in D.DIRECT) saved[k] = D.DIRECT[k];
+      try {
+        tryCheck("direct", "stuck scoreboard 8:00 is overridden by direct 3:00", function () {
+          var L = [evt("__t1", 4, "8:00", 20, 17)];
+          D.DIRECT.__t1 = { status: st(4, "3:00"), scores: { h: 20, a: 24 }, at: Date.now() };
+          D.applyDirect(L);
+          var c = L[0].e.competitions[0];
+          return { ok: c.status.displayClock === "3:00" && c.competitors[1].score === "24",
+            detail: c.status.displayClock + ", " + c.competitors[1].score };
+        });
+        tryCheck("direct", "an older direct answer never walks a game backwards", function () {
+          var L = [evt("__t2", 4, "2:00", 14, 14)];
+          D.DIRECT.__t2 = { status: st(4, "7:00"), scores: { h: 7, a: 14 }, at: Date.now() };
+          D.applyDirect(L);
+          var c = L[0].e.competitions[0];
+          return { ok: c.status.displayClock === "2:00" && c.competitors[0].score === "14" };
+        });
+        tryCheck("direct", "the scoreboard wins again once it catches up", function () {
+          var L = [evt("__t1", 4, "1:10", 20, 24)];
+          D.applyDirect(L);
+          return { ok: L[0].e.competitions[0].status.displayClock === "1:10" };
+        });
+        tryCheck("direct", "period and final count as progress", function () {
+          var a = [evt("__t3", 4, "0:00", 21, 21)], b = [evt("__t4", 4, "0:40", 30, 27)];
+          D.DIRECT.__t3 = { status: st(5, "15:00"), scores: null, at: Date.now() };
+          D.DIRECT.__t4 = { status: st(4, "0:00", "post"), scores: null, at: Date.now() };
+          D.applyDirect(a); D.applyDirect(b);
+          return { ok: a[0].e.competitions[0].status.period === 5 && b[0].e.competitions[0].status.type.state === "post" };
+        });
+      } finally {
+        ["__t1", "__t2", "__t3", "__t4"].forEach(function (k) { delete D.DIRECT[k]; delete D.SEEN[k]; delete D.DLAST[k]; });
+        for (var k2 in saved) D.DIRECT[k2] = saved[k2];
+      }
+      var ds = H.directStatus ? H.directStatus() : null;
+      check("direct", "lane status in this browser (informational)", true,
+        !ds ? "no status" : ds.blocked ? "BLOCKED: " + ds.lastErr : ds.ok ? ds.ok + " checks ok" : "no checks yet — nothing late or stuck");
+    })();
 
     /* ------------------------------ report ------------------------------ */
     var pass = out.filter(function (r) { return r.ok; }).length;
