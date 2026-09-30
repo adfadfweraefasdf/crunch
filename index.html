@@ -41,6 +41,7 @@ html,body{margin:0;padding:0;background:#080c12;color:#dbe4ef;font-family:var(--
 /* the next-crunch readout: dim while it is far off, warmer as it approaches, and
    fully lit the moment something is actually in crunch */
 #pageHead .headbtns{display:flex;gap:6px;align-items:center;order:8}
+#pageHead #alertBtn.on{color:#0b111a;background:#f2a93b;border-color:#f2a93b;font-weight:700}
 /* The next-crunch readout is the one thing on this header worth reading from
    across the room: it sits last (far right on desktop) and is set larger than
    everything around it. On a phone it takes a full row of its own. */
@@ -543,6 +544,7 @@ footer#notes b{color:#8496ac;font-weight:600}
   <div class="status" id="status"><span class="dot"></span>idle</div>
   <div class="pill" id="age">not loaded</div>
   <div class="headbtns">
+    <button id="alertBtn" title="Alert me when any game enters crunch">🔔 ALERTS OFF</button>
     <button id="reload" title="Refresh now (R)">REFRESH</button>
     <button id="schBtn" title="Upcoming schedule by week">SCHEDULE</button>
     <button id="cfgBtn" title="Settings (S)">SETTINGS</button>
@@ -577,7 +579,6 @@ footer#notes b{color:#8496ac;font-weight:600}
   <div class="filters wrap row2">
     <button id="fPre">Show upcoming</button>
     <button id="fPost">Show finals</button>
-    <button id="fPing" title="Sound when any game crosses into crunch — under 5:00 and within 16">Alert on crunch time</button>
     <div class="grp lg"><label>Leagues</label>
       <button id="fbsBtn" title="FBS — the top college division">FBS</button>
       <button id="fcsBtn" title="FCS — the championship subdivision">FCS</button>
@@ -1282,7 +1283,6 @@ var HUB = (function () {
   /* --------------------------- live loop -------------------------- */
   var needs = {}, want = { fbs: true, fcs: false, nfl: true };
   var RANGE = function (a, b) { return compact(a) + "-" + compact(b); };
-  var RANGE = function (a, b) { return compact(a) + "-" + compact(b); };
   var subs = [], timer = null, inFlight = false, paceFn = null;
   var cache = {};                       // feed key -> {at, items, empty}
   var live = { raw: [], at: 0, err: null, ymd: null };
@@ -1336,7 +1336,10 @@ var HUB = (function () {
      type{state,name,shortDetail}} for status and {value|displayValue} for a
      score. Anything that does not match is ignored field by field, and Settings
      reports whether the lane is working. */
-  var CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/";
+  /* NOT named CORE: HUB already has a CORE (the fixed linear-lane channel set).
+     A second `var CORE` here silently overwrote it with this URL and the timeline
+     lost every empty linear lane. `var` redeclaration is legal and warns nobody. */
+  var CORE_API = "https://sports.core.api.espn.com/v2/sports/football/leagues/";
   var DIRECT = {};                 // event id -> {status, scores:{teamId:n}, at}
   var DSTAT = { ok: 0, fail: 0, lastOk: 0, lastErr: "", blocked: false, blockedAt: 0 };
   var DLAST = {};                  // event id -> last direct request time
@@ -1426,7 +1429,7 @@ var HUB = (function () {
   }
   function directCheck(it) {
     var e = it.e, c = (e.competitions && e.competitions[0]) || {};
-    var base = CORE + leagueSlug(it.sport) + "/events/" + e.id + "/competitions/" + (c.id || e.id);
+    var base = CORE_API + leagueSlug(it.sport) + "/events/" + e.id + "/competitions/" + (c.id || e.id);
     DLAST[e.id] = Date.now();
     var teams = (c.competitors || []).map(function (x) { return String(x.id); }).filter(Boolean);
     return Promise.all([
@@ -2454,6 +2457,7 @@ function heatColor(r){
 const CANON0=660,CANON1=1500;          // 11:00a - 1:00a: the fitted canvas, fixed every day
 const DAY0=420,DAY1=1800;              // the TV day itself: 7:00a through 6:00a the next morning
 let ST={games:[],t0:660,t1:1500,resetScroll:true,dayStart:0,sortKey:"end",sortDir:1,err:null,ppm:2};
+window.__FC.renderGuide=()=>render();window.__FC.ST=ST;window.__FC.S=S;   // after `let ST`: earlier is a TDZ crash
 const ROOT=document.getElementById("guideView");
 const $=s=>document.querySelector(s);      // ids are page-unique; some live in the page header
 const QA=s=>ROOT.querySelectorAll(s);      // class lookups stay inside the timeline section
@@ -3701,6 +3705,37 @@ function rowHTML(g, isNew, hot) {
     '<div class="acts lcell">' + boxCell + '</div></div>';
 }
 
+/* A system notification per game entering crunch, so the alert reaches you when
+   this tab is behind another window. Tagged by game, so a repeat replaces rather
+   than stacks. Needs the browser's permission, asked for when you turn alerts on.
+   What it cannot do: wake a page the browser has put to sleep. A phone suspends
+   background tabs; there, the page has to be open (or installed to the home
+   screen) to hear anything. */
+function notifyCrunch(g) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    var a = g.away || {}, h = g.home || {};
+    var line = (a.abbr || '?') + ' ' + (a.score == null ? '' : a.score) + ' – ' +
+               (h.abbr || '?') + ' ' + (h.score == null ? '' : h.score);
+    var when = (g.clock || '') + ' ' + (g.periodLabel || '');
+    var ch = g.chans && g.chans.length ? ' · ' + g.chans[0] : '';
+    var n = new Notification('Crunch: ' + line, {
+      body: when.trim() + ch, tag: 'crunch-' + g.id, renotify: false, silent: true
+    });
+    n.onclick = function () { try { window.focus(); n.close(); } catch (e) {} };
+  } catch (e) {}
+}
+function alertSync() {
+  var b = document.getElementById('alertBtn'); if (!b) return;
+  var perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+  b.classList.toggle('on', !!F.ping);
+  b.textContent = F.ping ? '🔔 ALERTS ON' : '🔔 ALERTS OFF';
+  b.title = !F.ping ? 'Alert me when any game enters crunch'
+    : perm === 'granted' ? 'On: a sound and a notification when a game enters crunch'
+    : perm === 'denied' ? 'On: sound only — notifications are blocked for this site in your browser settings'
+    : perm === 'unsupported' ? 'On: sound only — this browser has no notifications'
+    : 'On: sound only until you allow notifications';
+}
 function beep() {
   try {
     var C = window.AudioContext || window.webkitAudioContext; if (!C) return;
@@ -3823,9 +3858,19 @@ function render() {
     nowCrunch[gj.id] = 1;
     if (!crunchSeen[gj.id]) entered++;
   }
-  if (F.ping && lastOk && crunchPrimed && entered) beep();
+  if (F.ping && lastOk && crunchPrimed && entered) {
+    beep();
+    for (var jn = 0; jn < games.length; jn++) {
+      var gn = games[jn];
+      if (nowCrunch[gn.id] && !crunchSeen[gn.id]) notifyCrunch(gn);
+    }
+  }
   crunchSeen = nowCrunch;
-  crunchPrimed = true;
+  /* Primed only by a render that had real feed data. The boot render runs before
+     anything has loaded; priming there made the first real poll treat every game
+     already in crunch as having just entered it, so opening the page mid-slate
+     fired an alert per game. */
+  if (lastOk) crunchPrimed = true;
 
   // still tracked so a row entering the visible set can flash
   var nowSeen = {}, fresh = {};
@@ -4062,7 +4107,7 @@ function syncUI() {
     var el = document.getElementById(id);
     if (el) el.classList.toggle('on', !!lg[LEAGUE_BTN[id]]);
   });
-  document.getElementById('fPing').classList.toggle('on', F.ping);
+  alertSync();
   document.getElementById('mktIn').value = F.mkt || '';
 }
 function set(k, v) { F[k] = v; save(); syncUI(); render(); }
@@ -4089,7 +4134,19 @@ Object.keys(LEAGUE_BTN).forEach(function (id) {
     syncUI();
   };
 });
-document.getElementById('fPing').onclick = function () { toggle('ping'); if (F.ping) beep(); };
+/* The click is the user gesture browsers require both to unlock audio and to ask
+   for notification permission, so both happen here. */
+document.getElementById('alertBtn').onclick = function () {
+  toggle('ping');
+  if (F.ping) {
+    beep();
+    try {
+      if ('Notification' in window && Notification.permission === 'default')
+        Notification.requestPermission().then(alertSync, alertSync);
+    } catch (e) {}
+  }
+  alertSync();
+};
 document.getElementById('bpoll').onchange = function () {
   F.poll = this.value === 'auto' ? 'auto' : parseInt(this.value, 10); save(); HUB.restart(); };
 /* the page-level REFRESH button is bound by the timeline code and drives the shared loop */
@@ -4399,6 +4456,40 @@ HUB.start();
       check("direct", "lane status in this browser (informational)", true,
         !ds ? "no status" : ds.blocked ? "BLOCKED: " + ds.lastErr : ds.ok ? ds.ok + " checks ok" : "no checks yet — nothing late or stuck");
     })();
+
+    /* --- 12. shared tables keep their types ---
+       A second `var CORE` in HUB once overwrote the linear-lane channel set with a
+       URL string, and every empty linear lane vanished from the timeline. These
+       fail loudly if any shared table is clobbered again. */
+    tryCheck("tables", "HUB.CORE is the linear-lane channel set", function () {
+      var c = H && H.CORE;
+      return { ok: c && typeof c === "object" && c.CBS === 1 && c.ESPN === 1 && !Array.isArray(c),
+        detail: typeof c + (c && typeof c === "object" ? " (" + Object.keys(c).length + " channels)" : "") };
+    });
+    tryCheck("tables", "lanes, tiers and chip classes are intact", function () {
+      var ok = Array.isArray(H.LANES) && H.LANES.length >= 3 &&
+        H.TIER_OF && H.TIER_OF.CBS === "broadcast" && H.CHIP && H.CHIP.broadcast;
+      return { ok: !!ok };
+    });
+    if (F.renderGuide && F.ST && F.S) tryCheck("tables", "timeline renders every linear lane", function () {
+      var st = document.getElementById("stage"); if (!st) return { ok: false, detail: "no stage" };
+      var keep = { games: F.ST.games, err: F.ST.err, html: st.innerHTML, empty: F.S.showEmpty };
+      try {
+        F.S.showEmpty = true; F.ST.err = null;
+        F.ST.games = [{ id: "__lane", sport: "cfb", group: "fbs", kick: 720, state: "pre", period: 0, clockSec: 900,
+          home: { abbreviation: "A", location: "A", shortDisplayName: "A" }, away: { abbreviation: "B", location: "B", shortDisplayName: "B" },
+          hs: 0, as: 0, margin: 0, chans: ["Peacock"], tier: "stream", end: 930, c5: 910, conf: "sched", delay: 0 }];
+        F.renderGuide();
+        var h = st.innerHTML;
+        var want = ["CBS", "NBC", "FOX", "ABC", "ESPN"], miss = want.filter(function (n) {
+          return h.indexOf('></div>' + n + '</div>') === -1;
+        });
+        return { ok: miss.length === 0, detail: miss.length ? "missing lanes: " + miss.join(", ") : "" };
+      } finally {
+        F.ST.games = keep.games; F.ST.err = keep.err; F.S.showEmpty = keep.empty;
+        try { F.renderGuide(); } catch (e) {}
+      }
+    });
 
     /* ------------------------------ report ------------------------------ */
     var pass = out.filter(function (r) { return r.ok; }).length;
