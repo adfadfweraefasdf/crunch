@@ -460,28 +460,6 @@ footer#notes b{color:#8496ac;font-weight:600}
 #stepAway .pane{max-width:1140px;margin:8px auto 0;padding:9px 12px;background:var(--panel2);
   border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:12px}
 #stepAway .pane h2{margin:0 0 7px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);font-weight:400}
-#stepAway .fb{margin:0 0 9px}
-#stepAway .fbbar{position:relative;height:8px;border-radius:4px;background:rgba(95,208,138,.22);margin:0 0 7px;overflow:hidden}
-#stepAway .fbbar span{position:absolute;top:0;bottom:0;background:var(--hot);min-width:2px}
-#stepAway .fbbar s{position:absolute;top:0;bottom:0;right:0;background:var(--panel2);
-  border-left:1px solid var(--dimmer);opacity:.85}
-#stepAway .fr{display:grid;grid-template-columns:128px 62px 1fr;gap:10px;align-items:baseline;
-  padding:3px 8px;border-left:3px solid var(--line);white-space:nowrap}
-#stepAway .fr b{font-size:13px;font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums}
-#stepAway .fr i{font-style:normal;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums}
-#stepAway .fr u{text-decoration:none;color:var(--dim);overflow:hidden;text-overflow:ellipsis;min-width:0}
-#stepAway .fr em{font-style:normal;color:var(--txt)}
-#stepAway .fr.free{border-left-color:var(--live)}
-#stepAway .fr.free u{color:var(--live);text-transform:uppercase;letter-spacing:.12em;font-size:10.5px}
-#stepAway .fr .ms{text-transform:none;letter-spacing:0;color:var(--dim)}
-#stepAway .fr .k{color:var(--hot)} #stepAway .fr .k2{color:var(--live)} #stepAway .fr .k3{color:var(--web)}
-#stepAway .fr.busy{border-left-color:var(--hot);background:var(--hotbg)}
-#stepAway .fr.busy b{color:var(--hot)}
-#stepAway .fr.done{border-left-color:var(--dimmer);margin-top:3px}
-#stepAway .fr .ota{color:var(--hot)} #stepAway .fr .cable{color:var(--live)}
-#stepAway .fr .stream{color:var(--web)} #stepAway .fr .other{color:var(--dimmer)}
-@media (max-width:820px){#stepAway .fr{grid-template-columns:104px 52px 1fr;gap:6px;padding:3px 6px}
-  #stepAway .fr b{font-size:12px}}
 #stepAway .win{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 @media (max-width:820px){#stepAway .win{grid-template-columns:repeat(auto-fit,minmax(122px,1fr))}}
 #stepAway .win div{border:1px solid var(--line);border-radius:3px;padding:6px 8px;background:var(--panel2)}
@@ -679,19 +657,21 @@ footer#notes b{color:#8496ac;font-weight:600}
   <label>Zoom (px/min)<input type="range" id="zoom" min="0.8" max="5" step="0.2"></label>
   <label>Always show core channels<input type="checkbox" id="showEmpty"></label>
   <label>Show finals<input type="checkbox" id="showFinal"></label>
-  <h2 style="margin-top:14px">Channel weight</h2>
+  <h2 style="margin-top:14px">Channel weight · second to closeness</h2>
   <div class="hint">Over the air in Chicago: CBS, NBC, FOX, ABC, CW. On the YouTube TV
     package: ESPN, ESPN2, ESPNU, FS1, NBCSN, CBSSN, ESPNews, SECN, ACCN, BTN, FS2, NFLN,
     TBS, TNT, USA, truTV. Everything else is a stream.</div>
-  <label>CBS / NBC / FOX / ABC<input type="number" id="w_broadcast" step="0.05" min="0"></label>
-  <label>CW<input type="number" id="w_cw" step="0.05" min="0"></label>
-  <label>ESPN / ESPN2 / FS1<input type="number" id="w_espn" step="0.05" min="0"></label>
-  <label>Rest of the package<input type="number" id="w_cable" step="0.05" min="0"></label>
-  <label>Major streaming<input type="number" id="w_stream" step="0.05" min="0"></label>
-  <label>Everything else<input type="number" id="w_stream2" step="0.01" min="0"></label>
+  <label>CBS / NBC / FOX / ABC / CW<input type="number" id="p_ota" step="0.05" min="0"></label>
+  <label>ESPN+ / SWAC TV / FloSports<input type="number" id="p_gstream" step="0.05" min="0"></label>
+  <label>Most cable<input type="number" id="p_cable" step="0.05" min="0"></label>
+  <label>Other streams<input type="number" id="p_stream" step="0.05" min="0"></label>
+  <label>CBSSN / TNT / USA (delayed)<input type="number" id="p_slow" step="0.05" min="0"></label>
   <h2 style="margin-top:14px">Game quality</h2>
-  <label>Rank boost per ranked team<input type="number" id="rankK" step="0.05" min="0"></label>
-  <label>Weight by rank + spread<input type="checkbox" id="useComp"></label>
+  <div class="hint">Closeness comes first and is not a setting: a one-score game counts 1.00,
+    9–16 points 0.30, 17–24 0.12, more 0.04 — before kickoff and mid-game it is the
+    expected value over where the margin is likely to finish.</div>
+  <label>Boost per ranked team (top 5 = full)<input type="number" id="rankB" step="0.05" min="0"></label>
+  <label>Weight by closeness + rank<input type="checkbox" id="useComp"></label>
   <label>Crunch spread on the heat strip (min)<input type="number" id="crunch" min="3" max="30"></label>
   <label>Minimum window to bother with (min)<input type="number" id="lunch" min="15" max="180" step="15" value="30"></label>
   <div class="hint" style="grid-column:1/-1">Direct game checks: <span id="directStat">idle</span>.
@@ -860,16 +840,36 @@ var HUB = (function () {
   /* Weight buckets inside those lists, so the drawer can still price a CBS game
      differently from a Tuesday-night ESPNU game. Membership is what the lists say;
      these only split them for scoring. */
+  /* How good a channel is to trade off, best first. This is J's order (2026-10-10):
+     over the air, then the streams that run close to real time, then most cable,
+     then every other stream, and last the cable networks that run far behind.
+     "none" is something you cannot put on a screen here at all. */
+  var GOOD_STREAM = ["ESPN+", "SWAC TV", "FloSports"];
+  var SLOW = ["CBSSN", "TNT", "USA"];
+  var GRADES = ["ota", "gstream", "cable", "stream", "slow", "none"];
+  function gradeOf(n) {
+    if (OTA.indexOf(n) !== -1) return "ota";
+    if (GOOD_STREAM.indexOf(n) !== -1) return "gstream";
+    if (SLOW.indexOf(n) !== -1) return "slow";
+    if (CARRIED.indexOf(n) !== -1) return "cable";
+    if (!n || n === "TBD" || n === "Local" || n === "Team network") return "none";
+    return "stream";
+  }
+  function gradeOfGame(chans) {          // a simulcast is as good as its best outlet
+    var best = GRADES.length - 1;
+    (chans || []).forEach(function (n) { var i = GRADES.indexOf(gradeOf(n)); if (i < best) best = i; });
+    return GRADES[best];
+  }
   var CW_SET = { CW: 1 }, MARQUEE = { ESPN: 1, ESPN2: 1, FS1: 1 };
   var CORE_SET = { CBS: 1, NBC: 1, FOX: 1, ABC: 1, CW: 1, ESPN: 1, ESPN2: 1, FS1: 1,
     ESPNU: 1, CBSSN: 1, SECN: 1, ACCN: 1, BTN: 1, "ESPN+": 1 };
 
   /* Named streams get a stable lane and a sensible weight; every other stream
      falls in beside them as it turns up. */
-  var MAJOR_STREAM = ["ESPN+", "Peacock", "Paramount+", "Prime", "Netflix", "Disney+",
+  var MAJOR_STREAM = ["ESPN+", "SWAC TV", "FloSports", "Peacock", "Paramount+", "Prime", "Netflix", "Disney+",
     "Apple TV", "YouTube"];
   var KNOWN_STREAM = ["ESPN3", "SECN+", "ACCNX", "B1G+", "MW+", "UConn+", "LHN", "BYUtv",
-    "CW app", "FloSports", "Victory+", "Midco", "NEC Front Row", "Stadium", "SWX",
+    "CW app", "Victory+", "Midco", "NEC Front Row", "Stadium", "SWX",
     "HBCU Go", "Patriot League", "Ivy League", "Big Sky TV", "SoCon Net", "ASUN+",
     "Summit Net", "Team network"];
 
@@ -935,7 +935,7 @@ var HUB = (function () {
     [/CW\s*APP|CW\s*NETWORK\s*APP/, "CW app"], [/^THE\s*CW|^CW/, "CW"], [/^ESPN/, "ESPN"],
     /* Named streams, so they get a stable lane and a readable chip. Anything not
        matched here is still a stream — it just keeps the feed's own label. */
-    [/^FLO[A-Z]*/, "FloSports"], [/MIDCO/, "Midco"], [/\bNEC\b|NORTHEAST\s*CONF/, "NEC Front Row"],
+    [/^FLO[A-Z]*/, "FloSports"], [/SWAC/, "SWAC TV"], [/MIDCO/, "Midco"], [/\bNEC\b|NORTHEAST\s*CONF/, "NEC Front Row"],
     [/FRONT\s*ROW/, "NEC Front Row"], [/^STADIUM/, "Stadium"], [/^SWX/, "SWX"], [/HBCU\s*GO/, "HBCU Go"],
     [/PATRIOT\s*LEAGUE/, "Patriot League"], [/IVY\s*LEAGUE/, "Ivy League"], [/BIG\s*SKY/, "Big Sky TV"],
     [/SOCON|SOUTHERN\s*CONF/, "SoCon Net"], [/ASUN/, "ASUN+"], [/SUMMIT\s*LEAGUE/, "Summit Net"],
@@ -2014,6 +2014,7 @@ var lucky=q=>"https://duckduckgo.com/?q="+encodeURIComponent(q);
     LANES: LANES, TIER_OF: TIER_OF, CORE: CORE, PRIO: PRIO, CLASS: CLASS, CHIP: CHIP,
     CATEG: CATEG, LINEAR: LINEAR, isLinearName: isLinearName,
     OTA: OTA, CARRIED: CARRIED, flushLines: flushLines, bankLine: bankLine,
+    gradeOf: gradeOf, gradeOfGame: gradeOfGame, GOOD_STREAM: GOOD_STREAM, SLOW: SLOW,
     teamSite: teamSite, anyLinear: anyLinear, clockOf: clockOf, teamOf: teamOf, core: core,
     normChan: normChan, tierOf: tierOf, channels: channels,
     CRUNCH_SECS: CRUNCH_SECS, CRUNCH_MARGIN: CRUNCH_MARGIN, ONE_POSSESSION: ONE_POSSESSION,
@@ -2075,8 +2076,8 @@ var VIEW = {
 "use strict";
 /* ============================ config ============================ */
 const DEF={tz:"America/Chicago",fit:true,zoom:2,showEmpty:true,showFinal:true,doCfb:true,doNfl:true,poll:45,
-  w_broadcast:1.00,w_cw:0.70,w_espn:0.85,w_cable:0.55,w_stream:0.20,w_stream2:0.03,w_local:0.02,w_other:0.15,
-  rankK:0.90,useComp:true,crunch:12,lunch:30};
+  p_ota:1.00,p_gstream:0.85,p_cable:0.70,p_stream:0.55,p_slow:0.35,
+  rankB:0.15,useComp:true,crunch:12,lunch:30};
 const S=Object.assign({},DEF,JSON.parse(localStorage.getItem("tvg.cfg2")||"{}"));
 const saveCfg=()=>localStorage.setItem("tvg.cfg2",JSON.stringify(S));
 /* Kept for the live table's own display of how long a game has been sitting
@@ -2441,11 +2442,10 @@ function onLinear(g){ return HUB.anyLinear(g&&g.chans); }   // the one rule, in 
 function crunchETA(g,now){
   if(g.state==="post")return null;
   if(g.state==="pre")return null;                       // handled separately
-  /* A blowout is normally left out because the margin four quarters from now is a
-     guess. But a game already on a channel you can flip to costs nothing to be
-     told about — you are not driving anywhere for it — so linear games stay in
-     regardless of score, and only the clock is being projected either way. */
-  if(g.margin>HUB.CRUNCH_MARGIN&&!onLinear(g))return null;
+  /* Close is what counts, on any channel. Outside two scores a game is left out —
+     unless the fourth quarter has not started and it is within 24, which is still
+     in reach. A lopsided game on CBS used to be kept just for being on CBS. */
+  if(g.margin>HUB.CRUNCH_MARGIN&&!(g.period<4&&g.margin<=24))return null;
   if(decided(g))return null;                            // inside 5:00, 17+ apart: not a crunch
   if(g.crunch)return now;
   if(g.period>4)return now;                             // overtime is crunch
@@ -2497,38 +2497,7 @@ function decided(g){
   if(g.state!=="in"||g.period>4||g.crunch)return false;
   return (g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG&&g.margin>HUB.CRUNCH_MARGIN;
 }
-/* Does this game's ending put you in front of a screen? Live: the pill's rule
-   (inside 16, or on a channel you can flip to). Not kicked: channels you can flip to. */
-function wanted(g){
-  if(g.state==="post"||g.c5==null||g.end==null)return false;
-  if(g.state==="pre")return onLinear(g);
-  if(decided(g))return false;
-  return g.margin<=HUB.CRUNCH_MARGIN||onLinear(g);
-}
-/* Free / busy from `from` onward. A game holds you from its 5:00 mark to its final;
-   overlapping or nearly-touching holds (under FB_GAP minutes apart) are one block.
-   `also` is the pill's own game, so the first block always starts where the pill says. */
-const FB_GAP=10;
-function freeBusy(G,from,also){
-  const add={};(also||[]).forEach(x=>{if(x)add[x.id]=1;});
-  const iv=[];
-  for(const g of G){
-    if(g.state==="post"||g.c5==null||g.end==null)continue;
-    if(!wanted(g)&&!(add[g.id]&&!decided(g)))continue;
-    const a=from==null?g.c5:Math.max(from,g.c5),b=Math.max(a+1,g.end);
-    iv.push({a,b,hi:Math.max(b,q95(g.end,sigOf(g))),g});
-  }
-  iv.sort((x,y)=>x.a-y.a);
-  const busy=[];
-  for(const v of iv){
-    const L=busy[busy.length-1];
-    if(L&&v.a-L.b<FB_GAP){L.b=Math.max(L.b,v.b);L.hi=Math.max(L.hi,v.hi);L.games.push(v.g);}
-    else busy.push({a:v.a,b:v.b,hi:v.hi,games:[v.g]});
-  }
-  const L=busy[busy.length-1];
-  return{busy,done:L?L.b:null,doneHi:L?L.hi:null};
-}
-window.__FC.freeBusy=freeBusy;window.__FC.spanEnd=spanEnd;window.__FC.spanHi=spanHi;
+window.__FC.spanEnd=spanEnd;window.__FC.spanHi=spanHi;
 window.__FC.setEst=g=>setEst(g);window.__FC.hhmm12=m=>hhmm12(m);window.__FC.q05=q05;window.__FC.q95=q95;window.__FC.sigOf=sigOf;window.__FC.decided=decided;
 
 /* Per-game crunch estimate for the live board: when the clock should read 5:00 of
@@ -2561,19 +2530,49 @@ HUB.crunchEst=function(id){
 };
 
 /* ===================== game weight, 0.0 – 5.0 =================== */
+/* Priorities, in J's order (2026-10-10):
+     1. Close. A one-score finish is the product — FCS on a stream included.
+     2. Channel, by how good it is to trade off (HUB.gradeOf).
+     3. A small boost for ranked teams.
+   weight = channel × closeness × rank, and 1.00 is a certain one-score finish over
+   the air. The closeness steps are far enough apart that ANY one-score game you can
+   put on a screen outweighs ANY game that is not one-score: worst channel × 1.00
+   (0.35) beats best channel × 0.30. Before the final minutes the margin at the end is
+   not known, so closeness is the expectation of those steps over the same margin
+   belief the pace model uses (mgDist) — a 20-point game in the second quarter is not
+   written off, and a pick'em that has not kicked is not assumed to be close. */
 const rankPts=r=>(!r||r>25)?0:r<=5?1.0:r<=10?.85:r<=15?.75:.65;
-function gameWeight(g){
-  const base=S["w_"+g.tier]!==undefined?S["w_"+g.tier]:S.w_other;
-  if(!S.useComp)return Math.min(5,base*2.2);
-  const rank=1+S.rankK*(rankPts(g.ar)+rankPts(g.hr));
-  let close;
-  if(g.state==="pre"){const sp=g.spread;
-    close=sp==null?1.30:sp<=3?2.00:sp<=7?1.70:sp<=10?1.40:sp<=17?1.05:0.65;}
-  else{const m=g.margin;
-    close=m<=3?2.00:m<=8?1.80:m<=16?1.30:m<=24?0.80:0.35;
-    if(g.period>=4&&m>24)close*=0.70;}
-  return Math.min(5,base*rank*close);
+const CLOSE_W=[[8,1.00],[16,0.30],[24,0.12],[1e9,0.04]];
+/* Belief about the margin when the clock reads 5:00 of the fourth — the moment the
+   game is either a crunch or not. Mean: the current margin plus the share of the
+   spread still to play. Variance: ordinary game noise (15.5 points over a full
+   game, growing with time) plus, when there is no line, not knowing how mismatched
+   the teams are (the class's measured spread of final margins, which acts as drift
+   and so grows with time squared). Inside 5:00 there is nothing left to guess: the
+   belief IS the scoreboard. */
+function closeBelief(g){
+  if(g.state==="in"&&g.period>4)return{p8:1,f:1};
+  const eg=g.state==="pre"?0:Math.max(0,(g.period-1)*900+(900-g.clockSec));
+  const rem=Math.max(0,CRUNCH_EG-eg)/3600,d=mgDist(g,3600-rem*3600);
+  const side=g.line&&g.line.side,hasS=g.spread!=null&&(side==="home"||side==="away"||g.spread===0);
+  const mis2=hasS?0:Math.max(0,Math.pow(MG_NS[clsOf(g)],2)-MG_SIG_SPREAD*MG_SIG_SPREAD);
+  const sg=Math.sqrt(MG_SIG_SPREAD*MG_SIG_SPREAD*rem+mis2*rem*rem);
+  const within=a=>sg<.75?(Math.abs(d.mu)<=a?1:0):Phi((a+.5-d.mu)/sg)-Phi((-a-.5-d.mu)/sg);
+  let f=0,prev=0,p8=0;
+  CLOSE_W.forEach(([a,w],i)=>{const pr=a>1e8?1:within(a);f+=(pr-prev)*w;if(i===0)p8=pr;prev=pr;});
+  return{p8,f};
 }
+function chanW(gr){return gr==="none"?0.05:(S["p_"+gr]!=null?+S["p_"+gr]:DEF["p_"+gr]);}
+function gameWeight(g){
+  g.grade=HUB.gradeOfGame(g.chans);
+  const ch=chanW(g.grade);
+  if(g.state==="post"){g.p8=null;g.rankF=1;return 0;}
+  const cb=closeBelief(g);g.p8=cb.p8;
+  g.rankF=1+(+S.rankB||0)*(rankPts(g.ar)+rankPts(g.hr));
+  if(!S.useComp)return ch*0.45;
+  return ch*cb.f*g.rankF;
+}
+window.__FC.gameWeight=gameWeight;window.__FC.closeBelief=closeBelief;window.__FC.crunchETA=(g,n)=>crunchETA(g,n);
 const RATE_K=2.3;
 const rate=raw=>5*(1-Math.exp(-Math.max(0,raw)/RATE_K));
 
@@ -2982,8 +2981,15 @@ function crunchNow(G){
    minus what leaving costs — an hour and a half that misses one stream beats
    twenty-five clear minutes, which is the judgement the old sum-of-heat ranking
    got backwards. */
-const SHOW_WINDOW_CARDS=false;
-const AWAY_COST={linear:25,cable:12,streaming:4};   // minutes of freedom each missed ending is worth giving up
+/* Minutes of freedom one missed ending is worth giving up, per unit of game weight:
+   a certain one-score finish over the air (1.00) costs 45; a typical un-kicked
+   ESPN+ game (~0.25) about 11. */
+const AWAY_MIN=45;
+/* A game costs a window if any real part of its last five minutes — 5:00 through
+   the final — falls inside it. Counting only games that REACH 5:00 inside the window
+   called a stretch "clear" while ten games that got there two minutes earlier were
+   still being decided. Three minutes of overlap is the tolerance for a bucket edge. */
+const endingsIn=(G,a,b)=>G.filter(g=>g.state!=="post"&&g.c5!=null&&g.c5<b-3&&(g.end==null?g.c5+15:g.end)>a+3);
 function windowsPane(H,G,t0,n){
   const nowM=(Date.now()-ST.dayStart)/6e4,today=todayLive();
   /* Windows only exist between the first kickoff and the last projected finish.
@@ -3038,6 +3044,9 @@ function windowsPane(H,G,t0,n){
   /* A seed only counts if it is actually quiet, and growth is capped at the same
      bar. Without the cap a seed sitting on the busiest two buckets of the day has
      a threshold high enough to swallow the entire slate and report it as a window. */
+  const mkWin=(t,end,least)=>{const L=endingsIn(G,t,end),wsum=L.reduce((a,g)=>a+(g.w||0),0);
+    return{t,end,L,least:!!least,mins:Math.round(end-t),clear:L.length===0,wsum,
+      close:L.reduce((a,g)=>a+(g.p8||0),0),score:(end-t)-wsum*AWAY_MIN};};
   const QUIET=0.30,k=Math.ceil(S.lunch/15),seen={},cand=[];
   for(let x=0;x+k<=n;x++){
     let mx=0;for(let y=x;y<x+k;y++)if(H.raw[y]>mx)mx=H.raw[y];
@@ -3049,8 +3058,7 @@ function windowsPane(H,G,t0,n){
     const t=Math.max(t0+lo*15,winFloor),end=Math.min(t0+hi*15,slateEnd);
     if(t<winFloor||end>slateEnd+1||end-t<S.lunch)continue;
     const key=t+"_"+end;if(seen[key])continue;seen[key]=1;
-    const m=missed(G,t,end),cost=m.linear*AWAY_COST.linear+m.cable*AWAY_COST.cable+m.streaming*AWAY_COST.streaming;
-    cand.push({t,end,m,mins:Math.round(end-t),clear:m.linear+m.cable+m.streaming===0,score:(end-t)-cost});}
+    cand.push(mkWin(t,end));}
   cand.sort((a,b)=>b.score-a.score||(b.end-b.t)-(a.end-a.t));
   const picked=[],fits=w=>picked.every(p=>w.t>=p.end||w.end<=p.t);
   /* One slot is held for a stretch that costs nothing at all. The scored ranking
@@ -3058,58 +3066,44 @@ function windowsPane(H,G,t0,n){
      then there is nowhere on the board that says "you can just go". */
   const free=cand.find(w=>w.clear);
   if(free)picked.push(free);
-  for(const w of cand){if(picked.length>=4)break;if(fits(w))picked.push(w);}
-  picked.forEach(w=>cards.push({t:w.t,pri:1,clear:w.clear,
+  for(const w of cand){if(picked.length>=4)break;if(w.score>0&&fits(w))picked.push(w);}
+  /* A wall-to-wall afternoon has no quiet stretch at all, and the pane used to go
+     blank exactly when "when can I eat" was hardest. So spare slots (up to two) go to
+     the cheapest stretches of the minimum length, at least an hour from any window
+     already named, and marked least-busy rather than free. */
+  if(picked.length<4){
+    const alt=[],far=w=>picked.every(p=>w.t>=p.end+60||w.end<=p.t-60);
+    for(let x=0;x+k<=n;x++){const t=t0+x*15,end=t+k*15;
+      if(t<winFloor||end>slateEnd+1)continue;alt.push(mkWin(t,end,true));}
+    alt.sort((a,b)=>a.wsum-b.wsum||a.t-b.t);
+    let added=0;
+    for(const w of alt){if(picked.length>=4||added>=2)break;if(far(w)){picked.push(w);added++;}}
+  }
+  const pct=x=>Math.round(100*x)+"%";
+  picked.forEach(w=>cards.push({t:w.t,pri:1,clear:w.clear,least:w.least&&!w.clear,
     b:`${hhmm12(w.t)}–${hhmm12(w.end)}`,
-    i:`${w.mins} min`,
-    j:w.clear?"clear":missTxt(w.m)}));
+    i:`${w.mins} min`+(w.least&&!w.clear?" · least busy":""),
+    j:w.clear?"clear":`${w.L.length} end · ≈${w.close.toFixed(1)} close`,
+    tip:w.clear?"No game is inside its last 5:00 in this stretch.":
+      "In their last 5:00 during this stretch (5:00 at · chance it is one-score):\n"+
+      w.L.slice().sort((a,b)=>(b.w||0)-(a.w||0)).slice(0,14).map(g=>
+        `${hhmm12(g.c5)}  ${nameShort(g.away)}@${nameShort(g.home)}  ${g.chans[0]}  ${pct(g.p8||0)}`).join("\n")+
+      (w.L.length>14?`\n+${w.L.length-14} more`:"")}));
 
-  /* 5 — when the day is done: the last final, with the last 5:00 beside it */
+  /* 5 — when the day is done: the last 5:00, and the final that follows it */
   let last=null,lastF=null;
   for(const g of G){if(g.state==="post"||g.c5==null)continue;
-    if(last==null||g.c5>last)last=g.c5;
-    if(g.end!=null&&(lastF==null||g.end>lastF))lastF=g.end;}
-  if(lastF!=null)cards.push({t:1e9,pri:2,b:hhmm12(lastF),
-    i:today?durTxt(lastF-nowM):"—",j:"last final"});
+    if(last==null||g.c5>last){last=g.c5;lastF=g.end;}}
+  if(last!=null)cards.push({t:1e9,pri:2,b:hhmm12(last),
+    i:today?durTxt(last-nowM):"—",j:"last 5:00"+(lastF!=null?" · final "+hhmm12(lastF):"")});
 
   picked.sort((a,b)=>a.t-b.t);
   cards.sort((a,b)=>a.pri-b.pri||a.t-b.t);
-  /* The free/busy list is the day plan now. The cards said the same things from a
-     second derivation (15-minute heat buckets), so the two could name different
-     windows for the same gap; they stay computed above and are off by default. */
-  if(!SHOW_WINDOW_CARDS)return `<div class="pane"><h2>Your day</h2>`+freeBusyHTML(G,today?nowM:null,today)+`</div>`;
-  return `<div class="pane"><h2>Your day</h2>`+freeBusyHTML(G,today?nowM:null,today)+`<div class="win">`+
-    cards.map(c=>`<div style="${c.clear?"border-color:#2f6b41":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
+  return `<div class="pane"><h2>Your day</h2><div class="win">`+
+    cards.map(c=>`<div${c.tip?` title="${esc(c.tip)}"`:""} style="${c.clear?"border-color:#2f6b41":c.least?"border-style:dashed":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
     `</div></div>`;
 }
 
-/* Free / busy, read top to bottom: the same c5 and end as every other surface. */
-function freeBusyHTML(G,from,today){
-  const cr=today&&typeof CR==="object"&&CR?CR:null;
-  const fb=freeBusy(G,from,cr&&cr.kind!=="none"?cr.games:null);
-  if(!fb.busy.length)return `<div class="fb"><div class="fr free"><b>Free</b><i>—</i><u>nothing left that needs you</u></div></div>`;
-  const nm=g=>`${esc(nameShort(g.away))}@${esc(nameShort(g.home))} <span class="${CLASS[g.tier]}">${esc(g.chans[0])}</span>`+
-    (g.state==="in"?` <em>${g.as}-${g.hs}</em>`:"");
-  const rows=[];let t=from;
-  const t0=from!=null?from:fb.busy[0].a,span=Math.max(1,fb.doneHi-t0),pc=x=>(Math.max(0,x-t0)/span*100).toFixed(2);
-  let bar="";
-  fb.busy.forEach((s,i)=>{
-    if(t!=null&&s.a-t>=1){
-      /* endings inside a free stretch are, by construction, games that do not hold you */
-      const m=missed(G,t,s.a),k=m.linear+m.cable+m.streaming;
-      rows.push(`<div class="fr free"><b>${i===0&&from!=null?"Now":hhmm12(t)}–${hhmm12(s.a)}</b><i>${durTxt(s.a-t)}</i><u>free${
-        k?` <span class="ms">· skips ${missTxt(m)}</span>`:""}</u></div>`);}
-    const gs=s.games.slice().sort((a,b)=>a.c5-b.c5);
-    rows.push(`<div class="fr busy"><b>${s.a-(from==null?-1e9:from)<1?"Now":hhmm12(s.a)}–${hhmm12(s.b)}</b><i>${durTxt(s.b-s.a)}</i><u>${
-      gs.slice(0,3).map(nm).join(" · ")}${gs.length>3?` · +${gs.length-3}`:""}</u></div>`);
-    bar+=`<span style="left:${pc(s.a)}%;width:${(Math.max(0,s.b-Math.max(t0,s.a))/span*100).toFixed(2)}%"></span>`;
-    t=s.b;
-  });
-  const MAXR=14,more=rows.length>MAXR?rows.length-MAXR:0;
-  const done=`<div class="fr done"><b>${hhmm12(fb.done)}</b><i>${from!=null?durTxt(fb.done-from):"—"}</i><u>done · 95% by ${hhmm12(fb.doneHi)}</u></div>`;
-  return `<div class="fb"><div class="fbbar" title="Now to done. Solid = a game inside its last 5:00.">${bar}<s style="left:${pc(fb.done)}%"></s></div>`+
-    rows.slice(0,MAXR).join("")+(more?`<div class="fr more"><b>…</b><i></i><u>${more} more before the end</u></div>`:"")+done+`</div>`;
-}
 const COLS=[["end","Proj. 5:00"],["fin","Proj. final"],["kick","Kick"],["game","Game"],["score","Score"],
   ["margin","Marg"],["chan","Channel"],["conf","Basis"]];
 function endingsPane(G){
@@ -3164,7 +3158,7 @@ function bindStage(H,G){
       ${g.delay>3?`<div class="r"><span>Banked delay</span><b style="color:var(--live)">${g.delay} min</b></div>`:""}
       <div class="r"><span>League</span><b>${g.sport==="nfl"?"NFL":"College (FBS)"}</b></div>
       <div class="r"><span>Channels</span><b>${g.chans.map(esc).join(", ")}</b></div>
-      <div class="r"><span>Weight</span><b>${g.w.toFixed(2)} / 5.00</b></div>
+      <div class="r"><span>Priority</span><b>${g.state==="post"?"—":`${g.w.toFixed(2)} · one-score ${Math.round(100*(g.p8||0))}% · ${esc(g.grade||"")} ×${chanW(g.grade).toFixed(2)}${g.rankF>1?` · rank ×${g.rankF.toFixed(2)}`:""}`}</b></div>
       <div style="margin-top:6px;display:flex;gap:12px">
         ${g.watch?`<a href="${esc(g.watch)}" target="_blank" rel="noopener">▶ Watch ↗</a>`:""}
         ${g.cast?`<a href="${esc(g.cast)}" target="_blank" rel="noopener">Gamecast ↗</a>`:""}</div>`;
@@ -3258,8 +3252,8 @@ function todayYMD(){const p={};for(const x of fmtr(S.tz).formatToParts(new Date(
   const d=new Date(Date.UTC(+p.year,+p.month-1,+p.day));if(+p.hour<7)d.setUTCDate(d.getUTCDate()-1);
   return d.toISOString().slice(0,10);}
 
-const FIELDS=["tz","fit","zoom","showEmpty","showFinal","w_broadcast","w_cw","w_espn",
-  "w_cable","w_stream","w_stream2","rankK","useComp","crunch","lunch"];
+const FIELDS=["tz","fit","zoom","showEmpty","showFinal","p_ota","p_gstream","p_cable",
+  "p_stream","p_slow","rankB","useComp","crunch","lunch"];
 /* The header answers "when do I need to be back", so it always reports today,
    even while the timeline below is parked on another date. */
 let CR={at:null,min:null,kind:"none",label:"",games:[]};
@@ -4940,7 +4934,7 @@ HUB.start();
        The row said 12:24, the timeline block stopped at 12:40 (the 90th percentile of
        the 5:00 time) and a finished game was drawn to a flat kickoff+190. These pin
        the block, the stub, the row line and the free/busy list to g.c5 and g.end. */
-    if (F.freeBusy && F.renderGuide && F.ST && F.S && F.hhmm12 && F.setEst && H) {
+    if (F.gameWeight && F.renderGuide && F.ST && F.S && F.hhmm12 && F.setEst && H) {
       var nowM = (Date.now() - F.ST.dayStart) / 6e4;
       var mk = function (id, o) {
         var g = { id: id, sport: "cfb", group: "fbs", kick: nowM - 170, state: "in", period: 3, clockSec: 400, detail: "6:40 - 3rd",
@@ -4949,24 +4943,41 @@ HUB.start();
         for (var k in o) g[k] = o[k];
         g.tier = H.tierOf(g.chans[0]); return g;
       };
-      tryCheck("agree", "free/busy: a game holds you from its 5:00 to its final; near holds merge", function () {
-        var G = [mk("a", { c5: nowM + 30, end: nowM + 52 }), mk("b", { c5: nowM + 58, end: nowM + 80 }), mk("c", { c5: nowM + 200, end: nowM + 222 })];
-        var fb = F.freeBusy(G, nowM), b = fb.busy;
-        var ok = b.length === 2 && Math.abs(b[0].a - (nowM + 30)) < .01 && Math.abs(b[0].b - (nowM + 80)) < .01 &&
-          Math.abs(b[1].a - (nowM + 200)) < .01 && Math.abs(fb.done - (nowM + 222)) < .01 && fb.doneHi > fb.done;
-        return { ok: ok, detail: b.map(function (x) { return Math.round(x.a - nowM) + "–" + Math.round(x.b - nowM); }).join(", ") + " min from now" };
+      /* priorities: close first, then channel, then a small rank boost */
+      var W = function (o) { var g = mk("w", o); g.line = g.line || { side: null }; return F.gameWeight(g); };
+      var q4 = function (ch, hs, as, x) { var o = { period: 4, clockSec: 240, chans: [ch], hs: hs, as: as, margin: Math.abs(hs - as) }; for (var k in (x || {})) o[k] = x[k]; return W(o); };
+      tryCheck("priority", "any one-score game outweighs any game that is not, whatever the channel", function () {
+        var worstClose = q4("CBSSN", 21, 14), bestNot = q4("CBS", 24, 14);
+        return { ok: worstClose > bestNot, detail: "CBSSN by 7 = " + worstClose.toFixed(2) + " · CBS by 10 = " + bestNot.toFixed(2) };
       });
-      tryCheck("agree", "free/busy: inside 5:00 and 17+ apart does not hold you; within 16 does", function () {
-        var blow = mk("d", { period: 4, clockSec: 120, hs: 45, as: 10, margin: 35, c5: nowM, end: nowM + 9 });
-        var live = mk("e", { period: 4, clockSec: 120, hs: 22, as: 10, margin: 12, c5: nowM, end: nowM + 14 });
-        var f1 = F.freeBusy([blow], nowM), f2 = F.freeBusy([live], nowM);
-        return { ok: f1.busy.length === 0 && f2.busy.length === 1 && Math.abs(f2.busy[0].a - nowM) < .01 };
+      tryCheck("priority", "same game: CBS > ESPN+ = SWAC TV = FloSports > ESPN > Peacock > CBSSN = TNT = USA", function () {
+        var v = ["CBS", "ESPN+", "SWAC TV", "FloSports", "ESPN", "Peacock", "CBSSN", "TNT", "USA"].map(function (c) { return q4(c, 21, 17); });
+        var ok = v[0] > v[1] && v[1] === v[2] && v[2] === v[3] && v[3] > v[4] && v[4] > v[5] && v[5] > v[6] && v[6] === v[7] && v[7] === v[8];
+        return { ok: ok, detail: v.map(function (x) { return x.toFixed(2); }).join(" ") };
       });
-      tryCheck("agree", "free/busy: an un-kicked stream is left out unless it is the pill's game", function () {
-        var s = mk("f", { state: "pre", period: 0, chans: ["ESPN+"], margin: 0, c5: nowM + 180, end: nowM + 198, conf: "sched" });
-        return { ok: F.freeBusy([s], nowM).busy.length === 0 && F.freeBusy([s], nowM, [s]).busy.length === 1 };
+      tryCheck("priority", "feed names land on the right channel", function () {
+        var m = [["SWAC TV", "SWAC TV"], ["SWAC Digital Network", "SWAC TV"], ["FloFootball", "FloSports"], ["FloSports", "FloSports"], ["ESPN+", "ESPN+"], ["CBSSN", "CBSSN"]];
+        var bad = m.filter(function (x) { return H.normChan(x[0]) !== x[1]; });
+        return { ok: !bad.length && H.gradeOf("SWAC TV") === "gstream" && H.gradeOf("USA") === "slow" && H.gradeOf("BTN") === "cable" && H.gradeOfGame(["CBSSN", "ESPN+"]) === "gstream",
+          detail: bad.map(function (x) { return x[0] + "→" + H.normChan(x[0]); }).join(", ") };
       });
-      tryCheck("agree", "timeline block, stub, row line and free/busy all print the same 5:00 and final", function () {
+      tryCheck("priority", "rank is a small boost: two top-5 teams ×1.30, never enough to beat closeness", function () {
+        var plain = q4("ESPN", 21, 17), top = q4("ESPN", 21, 17, { ar: 2, hr: 4 }), rankedBlow = q4("CBS", 38, 21, { ar: 1, hr: 2 });
+        return { ok: Math.abs(top / plain - 1.30) < .001 && plain > rankedBlow, detail: "×" + (top / plain).toFixed(2) + " · unranked one-score ESPN " + plain.toFixed(2) + " vs #1/#2 CBS by 17 " + rankedBlow.toFixed(2) };
+      });
+      tryCheck("priority", "before the end it is an expectation: pick'em > 28-point spread; Q2 by 20 is not written off", function () {
+        var pre = function (sp) { return W({ state: "pre", period: 0, clockSec: 900, hs: 0, as: 0, margin: 0, spread: sp, line: { side: "home" } }); };
+        var q2 = W({ period: 2, clockSec: 600, hs: 27, as: 7, margin: 20 }), q4b = q4("ESPN", 27, 7), one = q4("ESPN", 21, 17);
+        return { ok: pre(1) > pre(28) * 2 && pre(1) < one && q2 > q4b * 1.5,
+          detail: "pre −1 " + pre(1).toFixed(2) + " · pre −28 " + pre(28).toFixed(2) + " · Q2 by 20 " + q2.toFixed(2) + " · Q4 by 20 " + q4b.toFixed(2) + " · Q4 by 4 " + one.toFixed(2) };
+      });
+      if (F.crunchETA) tryCheck("priority", "pill follows closeness, not channel", function () {
+        var cbsBlow = mk("p1", { period: 4, clockSec: 600, chans: ["CBS"], hs: 45, as: 10, margin: 35 });
+        var strClose = mk("p2", { period: 3, clockSec: 600, chans: ["SWAC TV"], hs: 20, as: 14, margin: 6 });
+        var reach = mk("p3", { period: 2, clockSec: 600, chans: ["ESPN+"], hs: 27, as: 7, margin: 20 });
+        return { ok: F.crunchETA(cbsBlow, nowM) === null && F.crunchETA(strClose, nowM) != null && F.crunchETA(reach, nowM) != null };
+      });
+      tryCheck("agree", "timeline block, stub, row line and day cards all print the same 5:00 and final", function () {
         var st = document.getElementById("stage"), sa = document.getElementById("stepAway");
         if (!st || !sa) return { ok: false, detail: "no stage" };
         var keep = { games: F.ST.games, err: F.ST.err, fin: F.S.showFinal };
@@ -4983,7 +4994,7 @@ HUB.start();
           if (Math.abs(eZ - Z.fin) > .6 || eZ > nowM + .6) bad.push("finished block ends " + F.hhmm12(eZ) + ", ended " + F.hhmm12(Z.fin));
           if (stub !== en) bad.push("stub " + stub);
           if (row.indexOf("5:00 ≈" + c5) < 0 || row.indexOf("end ≈" + en) < 0) bad.push("row: " + row);
-          if (plan.indexOf(c5 + "–" + en) < 0) bad.push("plan: " + plan.slice(0, 90));
+          if (plan.indexOf(c5) < 0 || plan.indexOf("final " + en) < 0) bad.push("cards: " + plan.slice(0, 90));
           return { ok: !bad.length, detail: bad.length ? bad.join("; ") : "5:00 " + c5 + " · final " + en };
         } finally {
           F.S.showFinal = keep.fin; F.ST.games = keep.games; F.ST.err = keep.err; F.setEst(keep.games);
