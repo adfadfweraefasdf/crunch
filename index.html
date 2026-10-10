@@ -460,6 +460,7 @@ footer#notes b{color:#8496ac;font-weight:600}
 #stepAway .pane{max-width:1140px;margin:8px auto 0;padding:9px 12px;background:var(--panel2);
   border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:12px}
 #stepAway .pane h2{margin:0 0 7px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);font-weight:400}
+#stepAway .pane h2 span{letter-spacing:.04em;text-transform:none;color:var(--dimmer)}
 #stepAway .win{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 @media (max-width:820px){#stepAway .win{grid-template-columns:repeat(auto-fit,minmax(122px,1fr))}}
 #stepAway .win div{border:1px solid var(--line);border-radius:3px;padding:6px 8px;background:var(--panel2)}
@@ -667,13 +668,12 @@ footer#notes b{color:#8496ac;font-weight:600}
   <label>Other streams<input type="number" id="p_stream" step="0.05" min="0"></label>
   <label>CBSSN / TNT / USA (delayed)<input type="number" id="p_slow" step="0.05" min="0"></label>
   <h2 style="margin-top:14px">Game quality</h2>
-  <div class="hint">Closeness comes first and is not a setting: a one-score game counts 1.00,
-    9–16 points 0.30, 17–24 0.12, more 0.04 — before kickoff and mid-game it is the
-    expected value over where the margin is likely to finish.</div>
+  <div class="hint">Closeness is not a setting: a one-score game counts 1.00, 9–16 points
+    0.60, 17–24 0.40, more 0.25 — before the last 5:00 it is the expected value over
+    where the margin is likely to be. A game's heat points = 1.2 × channel × closeness × rank.</div>
   <label>Boost per ranked team (top 5 = full)<input type="number" id="rankB" step="0.05" min="0"></label>
   <label>Weight by closeness + rank<input type="checkbox" id="useComp"></label>
-  <label>Crunch spread on the heat strip (min)<input type="number" id="crunch" min="3" max="30"></label>
-  <label>Minimum window to bother with (min)<input type="number" id="lunch" min="15" max="180" step="15" value="30"></label>
+  <label>Minimum window to bother with (min)<input type="number" id="lunch" min="10" max="180" step="5" value="30"></label>
   <div class="hint" style="grid-column:1/-1">Direct game checks: <span id="directStat">idle</span>.
     Late and stuck games are also checked one at a time against ESPN's small per-game record,
     because the full scoreboard can lag the broadcast by minutes. The fresher answer wins.</div>
@@ -2534,15 +2534,23 @@ HUB.crunchEst=function(id){
      1. Close. A one-score finish is the product — FCS on a stream included.
      2. Channel, by how good it is to trade off (HUB.gradeOf).
      3. A small boost for ranked teams.
-   weight = channel × closeness × rank, and 1.00 is a certain one-score finish over
-   the air. The closeness steps are far enough apart that ANY one-score game you can
-   put on a screen outweighs ANY game that is not one-score: worst channel × 1.00
-   (0.35) beats best channel × 0.30. Before the final minutes the margin at the end is
+   weight = 1.2 × channel × closeness × rank, in heat-strip points: what the game adds
+   to the 0–5 number while it is in its last 5:00
+   (see CLOSE_W below for the steps). Before the final minutes the margin at the end is
    not known, so closeness is the expectation of those steps over the same margin
    belief the pace model uses (mgDist) — a 20-point game in the second quarter is not
    written off, and a pick'em that has not kicked is not assumed to be close. */
 const rankPts=r=>(!r||r>25)?0:r<=5?1.0:r<=10?.85:r<=15?.75:.65;
-const CLOSE_W=[[8,1.00],[16,0.30],[24,0.12],[1e9,0.04]];
+/* Closeness steps and the points scale are set from J's own description of the heat
+   number (2026-10-10), read as "what one game that is definitely in its last 5:00
+   is worth":
+     one-score on FOX 1.2 · on ESPN+ 1.0 · on ESPN 0.84   ("one pretty good game" is
+       0.6–0.9; a single close game "might sneak into" 1.0–1.9)
+     up 20 on FOX 0.48 · on ESPN 0.34                      ("a couple blowouts" ≈ 1)
+     up 18 on USA 0.17 · one-score on TNT 0.42             (0.1–0.5: close to free)
+   The earlier steps (0.30 / 0.12 / 0.04) priced a blowout at almost nothing, which is
+   why sixteen endings summed to yellow. */
+const CLOSE_W=[[8,1.00],[16,0.60],[24,0.40],[1e9,0.25]],PTS=1.2;
 /* Belief about the margin when the clock reads 5:00 of the fourth — the moment the
    game is either a crunch or not. Mean: the current margin plus the share of the
    spread still to play. Variance: ordinary game noise (15.5 points over a full
@@ -2569,12 +2577,15 @@ function gameWeight(g){
   if(g.state==="post"){g.p8=null;g.rankF=1;return 0;}
   const cb=closeBelief(g);g.p8=cb.p8;
   g.rankF=1+(+S.rankB||0)*(rankPts(g.ar)+rankPts(g.hr));
-  if(!S.useComp)return ch*0.45;
-  return ch*cb.f*g.rankF;
+  if(!S.useComp)return PTS*ch*0.6;
+  return PTS*ch*cb.f*g.rankF;
 }
 window.__FC.gameWeight=gameWeight;window.__FC.closeBelief=closeBelief;window.__FC.crunchETA=(g,n)=>crunchETA(g,n);
-const RATE_K=2.3;
-const rate=raw=>5*(1-Math.exp(-Math.max(0,raw)/RATE_K));
+/* Points simply add up to 3.0, so the low bands mean what they say (one good game
+   ≈ 0.6–0.9, a single great one ≈ 1.2). Above 3 the scale is squeezed toward 5:
+   five one-score games on FOX/FOX/ESPN/ESPN/ESPN+ = 5.1 points → 4.1. */
+const rate=raw=>{raw=Math.max(0,raw);return raw<=3?raw:3+2*(1-Math.exp(-(raw-3)/2.5));};
+window.__FC.rate=rate;window.__FC.heatBins=(G,t0,n)=>heatBins(G,t0,n);
 
 /* ===================== time-zone plumbing ====================== */
 let FMT=null,TZ=null;
@@ -2725,24 +2736,37 @@ function normalize(raw,dayStart,now){
 /* ids already counted, so a game sitting final for an hour contributes once */
 
 /* ============================= heat ============================= */
-/* The heat strip is about when games become worth watching, not when they stop, so
-   it is built on the 5:00 projection. */
+/* Each 15-minute block is the sum, over games, of
+       points(game) × P(the game is inside its last 5:00 during the block)
+   where "inside its last 5:00" runs from g.c5 to g.end and needs three minutes of
+   overlap with the block — the same test the day cards use. A game that is certainly
+   ending counts in full in each block it is live in; it is no longer divided among
+   them. The old strip spread each game's weight so the whole day summed to one game,
+   and placed it in the twelve minutes BEFORE the 5:00 mark, so a cluster of sixteen
+   endings peaked around a third of its real size, a block early.
+   P uses the same skewed timing distribution as every interval on the page, with
+   5:00 and the final moving together. Already past 5:00: only the final is uncertain. */
 function heatBins(games,t0,n){
-  const raw=new Array(n).fill(0),who=Array.from({length:n},()=>[]),c=S.crunch;
+  const raw=new Array(n).fill(0),who=Array.from({length:n},()=>[]);
   for(const g of games){
-    if(g.c5==null)continue;
-    const s1=sigOf(g),lo=g.c5-c-3.5*s1,hi=g.c5+3.5*s1*SKEW;
+    if(g.state==="post"||g.c5==null||!(g.w>0))continue;
+    const s1=sigOf(g),end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
+    const inside=g.state==="in"&&(g.crunch||g.period>4||(g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG);
+    const lo=inside?t0:g.c5-3.5*s1-15,hi=end+3.5*s1*SKEW;
     const i0=Math.max(0,Math.floor((lo-t0)/15)),i1=Math.min(n-1,Math.ceil((hi-t0)/15));
     for(let i=i0;i<=i1;i++){
-      const bs=t0+i*15;let acc=0;
-      for(let k=0;k<5;k++){const t=bs+1.5+3*k;acc+=endCDF(t+c,g.c5,s1)-endCDF(t,g.c5,s1);}
-      const v=g.w*3*acc/c;                       // integrates to g.w across the whole day
-      if(v>.004){raw[i]+=v;if(v>g.w*.12)who[i].push(g);}
+      const bs=t0+i*15,be=bs+15;
+      if(inside&&be<g.c5-1)continue;                       // blocks already behind us
+      const pr=(inside?1:endCDF(be-3,g.c5,s1))-endCDF(bs+3,end,s1);
+      const v=g.w*Math.max(0,pr);
+      if(v>.004){raw[i]+=v;if(pr>.12)who[i].push(g);}
     }
   }
   return{raw,rating:raw.map(rate),who};
 }
-const STOPS=[[0,"#05080c"],[0.30,"#0f3a1e"],[1.0,"#1d6b34"],[1.8,"#5aa32a"],[2.6,"#c9b021"],[3.4,"#e07d1c"],[4.2,"#d63b25"],[5,"#8c1111"]];
+/* colour bands follow the same description: under 0.6 barely there, green to 2,
+   yellow through the 2s, orange through the 3s, red from 4 */
+const STOPS=[[0,"#05080c"],[0.10,"#0b2414"],[0.60,"#14502a"],[1.0,"#1d6b34"],[2.0,"#8fae25"],[2.5,"#d0b420"],[3.0,"#e39a1c"],[3.5,"#e0701c"],[4.0,"#d63b25"],[5,"#8c1111"]];
 const hx=c=>[1,3,5].map(i=>parseInt(c.substr(i,2),16));
 const mix=(a,b,t)=>{const A=hx(a),B=hx(b);
   return"#"+A.map((v,i)=>Math.round(v+(B[i]-v)*t).toString(16).padStart(2,"0")).join("")};
@@ -2859,7 +2883,7 @@ function render(){
   let hs="";
   for(let i=0;i<n;i++){const r=H.rating[i],m=t0+i*15,bw=px(15);
     hs+=`<div class="hc" data-b="${i}" style="left:${px(m-t0)}px;width:${bw}px;background:${heatColor(r)}">`
-      +`${bw>24&&r>=.05?`<b style="color:${r<1.6?"rgba(255,255,255,.62)":"rgba(0,0,0,.72)"}">${r.toFixed(1)}</b>`:""}</div>`;}
+      +`${bw>=20&&r>=.05?`<b style="color:${r<1.6?"rgba(255,255,255,.62)":"rgba(0,0,0,.72)"}">${r.toFixed(1)}</b>`:""}</div>`;}
 
   let html=`<div id="grid"><div class="hrow">
     <div class="lane" style="border:0"><div class="hlbl">Ending</div>
@@ -2982,125 +3006,113 @@ function crunchNow(G){
    twenty-five clear minutes, which is the judgement the old sum-of-heat ranking
    got backwards. */
 /* Minutes of freedom one missed ending is worth giving up, per unit of game weight:
-   a certain one-score finish over the air (1.00) costs 45; a typical un-kicked
-   ESPN+ game (~0.25) about 11. */
-const AWAY_MIN=45;
-/* A game costs a window if any real part of its last five minutes — 5:00 through
-   the final — falls inside it. Counting only games that REACH 5:00 inside the window
-   called a stretch "clear" while ten games that got there two minutes earlier were
-   still being decided. Three minutes of overlap is the tolerance for a bucket edge. */
-const endingsIn=(G,a,b)=>G.filter(g=>g.state!=="post"&&g.c5!=null&&g.c5<b-3&&(g.end==null?g.c5+15:g.end)>a+3);
+   per heat point: a certain one-score finish over the air (1.2) costs 48; a typical
+   un-kicked ESPN+ game (~0.5) about 20. */
+const AWAY_MIN=40;
+/* ---- break windows ----
+   A game HOLDS you from the earliest its crunch could start to the latest it could
+   end: the 5th percentile of its 5:00 time through the 95th percentile of its final
+   (already inside 5:00: from now). A break window runs from one game's hold ending
+   to the next hold starting — exact minutes, recomputed on every repaint, so it
+   tightens as live clocks replace schedule guesses.
+   Strict gaps are scarce on a full slate, so windows that run through other games'
+   holds are offered too — same kind of edges, a game's 95% end to another's 5% start
+   — each priced on the heat scale. Games under 0.1 point are blank on that scale
+   and hold nobody. */
+const HOLD_MIN_W=0.10,WIN_COST_CAP=3.0,WIN_MAX=6;
+function holdOf(g){
+  if(g.state==="post"||g.c5==null||!(g.w>=HOLD_MIN_W))return null;
+  const sg=sigOf(g),end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
+  const inside=g.state==="in"&&(g.crunch||g.period>4||(g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG);
+  return{lo:inside?-1e9:q05(g.c5,sg),hi:q95(end,sg),g};
+}
+/* What a window costs: the heat-strip sum over the window instead of over a block —
+   Σ points × P(the game is inside its last 5:00 at some time in the window). So a
+   window's number reads on the same 0–5 bands as the strip. */
+function breakWindows(G,from,minLen){
+  const Hd=G.map(holdOf).filter(Boolean).sort((a,b)=>a.lo-b.lo),n=Hd.length;
+  if(!n)return[];
+  const starts=[];
+  if(from!=null)starts.push({t:from,g:null});
+  Hd.forEach(h=>{if(from==null||h.hi>from)starts.push({t:h.hi,g:h.g});});
+  const ends=Hd.filter(h=>h.lo>-1e8&&(from==null||h.lo>from));
+  const meta=Hd.map(h=>{const g=h.g,sg=sigOf(g);
+    return{g,sg,inside:h.lo<-1e8,end:g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch};});
+  /* P(crunch has started by each possible end), P(game is over by each possible start) */
+  const Fc=ends.map(e=>meta.map(m=>m.inside?1:endCDF(e.lo,m.g.c5,m.sg)));
+  const TIERS=[.5,1,2,WIN_COST_CAP],all=[];
+  for(const st of starts){
+    const Fe=meta.map(m=>endCDF(st.t,m.end,m.sg)),isNow=st.g===null;
+    let best={};                                   // longest window per tier from this start
+    for(let j=0;j<ends.length;j++){
+      const e=ends[j].lo,len=e-st.t;
+      if(len<=1e-6)continue;
+      let cost=0,held=0;const skip=[];
+      for(let k=0;k<n;k++){
+        if(Hd[k].lo<e-1e-6&&Hd[k].hi>st.t+1e-6)held++;
+        const pr=Fc[j][k]-Fe[k];
+        if(pr>0){cost+=meta[k].g.w*pr;if(pr>=.15)skip.push({g:meta[k].g,pr});}
+      }
+      if(cost>WIN_COST_CAP)break;                  // only grows as the end moves out
+      if(len<(isNow?Math.min(minLen,5):minLen))continue;
+      const key=held===0?"c":"t"+TIERS.findIndex(x=>cost<=x);
+      best[key]={t:st.t,end:e,cost,clear:held===0,skip,from:st.g,to:ends[j].g};
+    }
+    for(const k in best)all.push(best[k]);
+  }
+  /* a window that sits inside another one costing no more is not a choice */
+  const keep=all.filter(w=>!all.some(v=>v!==w&&v.t<=w.t+1e-6&&v.end>=w.end-1e-6&&v.cost<=w.cost+1e-9&&
+    (v.end-v.t>w.end-w.t+1e-6||v.cost<w.cost-1e-9)));
+  keep.forEach(w=>{w.mins=Math.round(w.end-w.t);
+    w.close=w.skip.reduce((a,x)=>a+(x.g.p8||0)*x.pr,0);w.score=(w.end-w.t)-w.cost*AWAY_MIN;});
+  /* every clear gap first; then the cheapest ways to make more, best value first,
+     dropping any that mostly repeats a window already chosen at the same or lower cost */
+  const picked=keep.filter(w=>w.clear).sort((a,b)=>(b.end-b.t)-(a.end-a.t)).slice(0,WIN_MAX);
+  const tier=w=>TIERS.findIndex(x=>w.cost<=x);
+  const rest=keep.filter(w=>!w.clear).sort((a,b)=>tier(a)-tier(b)||b.score-a.score);
+  for(const w of rest){
+    if(picked.length>=WIN_MAX)break;
+    let covered=0;
+    const dup=picked.some(p=>{const ov=Math.min(p.end,w.end)-Math.max(p.t,w.t);
+      if(ov>0&&p.cost<=w.cost)covered+=ov;
+      return ov>0&&((p.cost<=w.cost&&ov>=.5*(w.end-w.t))||ov>.7*(w.end-w.t)||(ov>.7*(p.end-p.t)&&p.cost>=w.cost));});
+    /* Two windows already on the board plus the real game between them is not a new
+       choice. Joined across something close to free (0.5 points or less), it is. */
+    if(!dup&&!(w.cost>.5&&covered>.6*(w.end-w.t)))picked.push(w);
+  }
+  return picked.sort((a,b)=>a.t-b.t||a.end-b.end);
+}
+window.__FC.breakWindows=breakWindows;window.__FC.holdOf=holdOf;
 function windowsPane(H,G,t0,n){
   const nowM=(Date.now()-ST.dayStart)/6e4,today=todayLive();
-  /* Windows only exist between the first kickoff and the last projected finish.
-     A day whose first game is at 1:15 was offering "9:45a–1:15p, clear" as its best
-     stretch — technically true and useless, and it displaced a real one. On a day
-     that is not today there is no "now" to start from either, so the whole slate
-     is in scope rather than the part after the current clock. */
-  let firstKick=null,lastEnd=null;
-  for(const g of G){
-    if(g.kick!=null&&(firstKick==null||g.kick<firstKick))firstKick=g.kick;
-    const e=g.c5!=null?g.c5:g.end;
-    if(e!=null&&(lastEnd==null||e>lastEnd))lastEnd=e;
-  }
-  const slateStart=firstKick==null?t0:firstKick;
-  const slateEnd=lastEnd==null?t0+n*15:lastEnd;
-  const floorT=Math.max(t0,slateStart,today?Math.floor(nowM/15)*15:-1e9);
-  const EPS=.06,cards=[];
+  const cards=[];
 
-  /* 1 — first crunch. Read straight off CR, the same object the header pill
-     paints from, rather than re-deriving it here. Two estimates of the same
-     moment on one screen is a bug however carefully each one is computed: the
-     pill projects to 5:00 of the fourth, while a g.end-minus-window guess
-     projects to the final whistle and then subtracts, and they never agreed. */
-  let crunchAt=null;
-  if(today){
-    const cr=(typeof CR==="object"&&CR)||{kind:"none"};
-    crunchAt=cr.kind==="now"?nowM:(cr.min!=null?cr.min:null);
-    cards.push(cr.kind==="now"
-      ?{t:nowM,pri:0,b:"Now",i:"first crunch",j:`<span style="color:var(--hot)">${cr.games.length} in crunch</span>`}
-      :cr.min!=null
-        ?{t:cr.min,pri:0,b:"Until "+hhmm12(cr.min),i:durTxt(cr.min-nowM),
-          j:"first crunch"+(cr.kind==="sched"?" · if close":"")}
-        :{t:-1e9,pri:0,b:"No crunch",i:"—",j:"projected today"});
-  }else{
-    /* CR only ever answers about today, so on any other date the first crunch has
-       to be derived from the day being shown. Every game is unplayed, so this is
-       the scheduled-crunch time for the earliest kickoff, not a forecast that it
-       will be close. */
-    let fc=null;
-    for(const g of G){const c=crunchScheduled(g,nowM);if(c!=null&&(fc==null||c<fc))fc=c;}
-    crunchAt=fc;
-    cards.push(fc!=null
-      ?{t:fc,pri:0,b:hhmm12(fc),i:"first crunch",j:"if that one is close"}
-      :{t:-1e9,pri:0,b:"No games",i:"—",j:"nothing scheduled"});
-  }
+  /* No first-crunch card: the header pill already says it, and beside a "Now–1:20p"
+     window it was the same fact twice with a different minute. The row is windows
+     only, six at most, one line. */
+  /* break windows: see breakWindows(). Every one that exists, up to WIN_MAX. */
+  const pct=x=>Math.round(100*x)+"%",gn=g=>`${nameShort(g.away)}@${nameShort(g.home)} (${g.chans[0]})`;
+  const picked=breakWindows(G,today?nowM:null,S.lunch);
+  picked.forEach(w=>cards.push({t:w.t,pri:1,clear:w.clear,
+    b:`${w.from===null?"Now":hhmm12(w.t)}–${hhmm12(w.end)}`,
+    i:`${w.mins} min`,
+    j:w.clear?"clear":`heat ${rate(w.cost).toFixed(1)} · ≈${w.close.toFixed(1)} close`,
+    tip:(w.from?`Opens ${hhmm12(w.t)}: ${gn(w.from)} is over by then, 95%.\n`:"Open now.\n")+
+      `Closes ${hhmm12(w.end)}: earliest ${gn(w.to)} reaches 5:00, 5%.`+
+      (w.clear?"":`\nLikely in their last 5:00 during it (5:00 at · chance in window · chance one-score):\n`+
+        w.skip.slice().sort((a,b)=>b.g.w*b.pr-a.g.w*a.pr).slice(0,12).map(x=>
+          `${hhmm12(x.g.c5)}  ${gn(x.g)}  ${pct(x.pr)}  ${pct(x.g.p8||0)}`).join("\n")+
+        (w.skip.length>12?`\n+${w.skip.length-12} more`:""))}));
 
-  /* 2–4 — best stretches away. Everything before the first crunch is already what
-     card one says, so windows start there: a "10:00a–1:15p, clear" slot on a day
-     whose first crunch is 1:12p is the same sentence twice, and it costs one of
-     only four slots that could have named a real gap later in the day. */
-  const winFloor=Math.max(floorT,crunchAt==null?-1e9:crunchAt);
-  /* A seed only counts if it is actually quiet, and growth is capped at the same
-     bar. Without the cap a seed sitting on the busiest two buckets of the day has
-     a threshold high enough to swallow the entire slate and report it as a window. */
-  const mkWin=(t,end,least)=>{const L=endingsIn(G,t,end),wsum=L.reduce((a,g)=>a+(g.w||0),0);
-    return{t,end,L,least:!!least,mins:Math.round(end-t),clear:L.length===0,wsum,
-      close:L.reduce((a,g)=>a+(g.p8||0),0),score:(end-t)-wsum*AWAY_MIN};};
-  const QUIET=0.30,k=Math.ceil(S.lunch/15),seen={},cand=[];
-  for(let x=0;x+k<=n;x++){
-    let mx=0;for(let y=x;y<x+k;y++)if(H.raw[y]>mx)mx=H.raw[y];
-    if(mx>QUIET)continue;
-    const thr=Math.max(EPS,Math.min(mx,QUIET));
-    let lo=x,hi=x+k;
-    while(lo>0&&H.raw[lo-1]<=thr&&t0+(lo-1)*15>=winFloor)lo--;
-    while(hi<n&&H.raw[hi]<=thr)hi++;
-    const t=Math.max(t0+lo*15,winFloor),end=Math.min(t0+hi*15,slateEnd);
-    if(t<winFloor||end>slateEnd+1||end-t<S.lunch)continue;
-    const key=t+"_"+end;if(seen[key])continue;seen[key]=1;
-    cand.push(mkWin(t,end));}
-  cand.sort((a,b)=>b.score-a.score||(b.end-b.t)-(a.end-a.t));
-  const picked=[],fits=w=>picked.every(p=>w.t>=p.end||w.end<=p.t);
-  /* One slot is held for a stretch that costs nothing at all. The scored ranking
-     will happily fill every slot with long windows that each clip an ending, and
-     then there is nowhere on the board that says "you can just go". */
-  const free=cand.find(w=>w.clear);
-  if(free)picked.push(free);
-  for(const w of cand){if(picked.length>=4)break;if(w.score>0&&fits(w))picked.push(w);}
-  /* A wall-to-wall afternoon has no quiet stretch at all, and the pane used to go
-     blank exactly when "when can I eat" was hardest. So spare slots (up to two) go to
-     the cheapest stretches of the minimum length, at least an hour from any window
-     already named, and marked least-busy rather than free. */
-  if(picked.length<4){
-    const alt=[],far=w=>picked.every(p=>w.t>=p.end+60||w.end<=p.t-60);
-    for(let x=0;x+k<=n;x++){const t=t0+x*15,end=t+k*15;
-      if(t<winFloor||end>slateEnd+1)continue;alt.push(mkWin(t,end,true));}
-    alt.sort((a,b)=>a.wsum-b.wsum||a.t-b.t);
-    let added=0;
-    for(const w of alt){if(picked.length>=4||added>=2)break;if(far(w)){picked.push(w);added++;}}
-  }
-  const pct=x=>Math.round(100*x)+"%";
-  picked.forEach(w=>cards.push({t:w.t,pri:1,clear:w.clear,least:w.least&&!w.clear,
-    b:`${hhmm12(w.t)}–${hhmm12(w.end)}`,
-    i:`${w.mins} min`+(w.least&&!w.clear?" · least busy":""),
-    j:w.clear?"clear":`${w.L.length} end · ≈${w.close.toFixed(1)} close`,
-    tip:w.clear?"No game is inside its last 5:00 in this stretch.":
-      "In their last 5:00 during this stretch (5:00 at · chance it is one-score):\n"+
-      w.L.slice().sort((a,b)=>(b.w||0)-(a.w||0)).slice(0,14).map(g=>
-        `${hhmm12(g.c5)}  ${nameShort(g.away)}@${nameShort(g.home)}  ${g.chans[0]}  ${pct(g.p8||0)}`).join("\n")+
-      (w.L.length>14?`\n+${w.L.length-14} more`:"")}));
-
-  /* 5 — when the day is done: the last 5:00, and the final that follows it */
+  /* when the day is done rides in the heading, so it never costs a card */
   let last=null,lastF=null;
   for(const g of G){if(g.state==="post"||g.c5==null)continue;
     if(last==null||g.c5>last){last=g.c5;lastF=g.end;}}
-  if(last!=null)cards.push({t:1e9,pri:2,b:hhmm12(last),
-    i:today?durTxt(last-nowM):"—",j:"last 5:00"+(lastF!=null?" · final "+hhmm12(lastF):"")});
-
-  picked.sort((a,b)=>a.t-b.t);
-  cards.sort((a,b)=>a.pri-b.pri||a.t-b.t);
-  return `<div class="pane"><h2>Your day</h2><div class="win">`+
-    cards.map(c=>`<div${c.tip?` title="${esc(c.tip)}"`:""} style="${c.clear?"border-color:#2f6b41":c.least?"border-style:dashed":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
+  const tail=last==null?"":` <span>· last 5:00 ${hhmm12(last)}${lastF!=null?" · final "+hhmm12(lastF):""}</span>`;
+  cards.sort((a,b)=>a.t-b.t);
+  if(!cards.length)cards.push({b:"No window",i:"—",j:G.some(g=>g.state!=="post")?"nothing under heat 3":"no games left"});
+  return `<div class="pane"><h2>Your day${tail}</h2><div class="win">`+
+    cards.map(c=>`<div${c.tip?` title="${esc(c.tip)}"`:""} style="${c.clear?"border-color:#2f6b41":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
     `</div></div>`;
 }
 
@@ -3136,7 +3148,7 @@ function bindStage(H,G){
       const m=missed(G,ST.t0+i*15,ST.t0+i*15+15),t=$("#tip");
       t.innerHTML=`<b>${hhmm12(ST.t0+i*15)} · ${H.rating[i].toFixed(1)}</b> — ${missTxt(m)}<br>`+
         (list.length?list.map(g=>`${hhmm12(g.c5)} ${esc(nameShort(g.away))}@${esc(nameShort(g.home))} `+
-          `<span style="color:var(--dim)">${esc(g.chans[0])} ${g.w.toFixed(1)}</span>`).join("<br>")
+          `<span style="color:var(--dim)">${esc(g.chans[0])} ${g.w.toFixed(2)}</span>`).join("<br>")
          :"<span style='color:var(--dim)'>nothing in this window</span>");
       t.style.display="block";place(t,ev);};
     el.onmousemove=ev=>place($("#tip"),ev);
@@ -3158,7 +3170,7 @@ function bindStage(H,G){
       ${g.delay>3?`<div class="r"><span>Banked delay</span><b style="color:var(--live)">${g.delay} min</b></div>`:""}
       <div class="r"><span>League</span><b>${g.sport==="nfl"?"NFL":"College (FBS)"}</b></div>
       <div class="r"><span>Channels</span><b>${g.chans.map(esc).join(", ")}</b></div>
-      <div class="r"><span>Priority</span><b>${g.state==="post"?"—":`${g.w.toFixed(2)} · one-score ${Math.round(100*(g.p8||0))}% · ${esc(g.grade||"")} ×${chanW(g.grade).toFixed(2)}${g.rankF>1?` · rank ×${g.rankF.toFixed(2)}`:""}`}</b></div>
+      <div class="r"><span>Heat points</span><b>${g.state==="post"?"—":`${g.w.toFixed(2)} · one-score ${Math.round(100*(g.p8||0))}% · ${esc(g.grade||"")} ×${chanW(g.grade).toFixed(2)}${g.rankF>1?` · rank ×${g.rankF.toFixed(2)}`:""}`}</b></div>
       <div style="margin-top:6px;display:flex;gap:12px">
         ${g.watch?`<a href="${esc(g.watch)}" target="_blank" rel="noopener">▶ Watch ↗</a>`:""}
         ${g.cast?`<a href="${esc(g.cast)}" target="_blank" rel="noopener">Gamecast ↗</a>`:""}</div>`;
@@ -3253,7 +3265,7 @@ function todayYMD(){const p={};for(const x of fmtr(S.tz).formatToParts(new Date(
   return d.toISOString().slice(0,10);}
 
 const FIELDS=["tz","fit","zoom","showEmpty","showFinal","p_ota","p_gstream","p_cable",
-  "p_stream","p_slow","rankB","useComp","crunch","lunch"];
+  "p_stream","p_slow","rankB","useComp","lunch"];
 /* The header answers "when do I need to be back", so it always reports today,
    even while the timeline below is parked on another date. */
 let CR={at:null,min:null,kind:"none",label:"",games:[]};
@@ -4946,10 +4958,37 @@ HUB.start();
       /* priorities: close first, then channel, then a small rank boost */
       var W = function (o) { var g = mk("w", o); g.line = g.line || { side: null }; return F.gameWeight(g); };
       var q4 = function (ch, hs, as, x) { var o = { period: 4, clockSec: 240, chans: [ch], hs: hs, as: as, margin: Math.abs(hs - as) }; for (var k in (x || {})) o[k] = x[k]; return W(o); };
-      tryCheck("priority", "any one-score game outweighs any game that is not, whatever the channel", function () {
-        var worstClose = q4("CBSSN", 21, 14), bestNot = q4("CBS", 24, 14);
-        return { ok: worstClose > bestNot, detail: "CBSSN by 7 = " + worstClose.toFixed(2) + " · CBS by 10 = " + bestNot.toFixed(2) };
-      });
+      /* J's bands for the heat number, as checks. Each game here is certainly inside
+         its last 5:00 for the whole first block. */
+      if (F.heatBins && F.rate) {
+        var bs0 = Math.floor(nowM / 15) * 15;
+        var heat = function (list) {
+          var G = list.map(function (x, i) { var g = mk("h" + i, { period: 4, clockSec: 200, chans: [x[0]], hs: x[1], as: 0, margin: x[1], crunch: x[1] <= 8, c5: bs0, end: bs0 + 16, conf: "crunch" });
+            g.line = { side: null }; g.w = F.gameWeight(g); return g; });
+          return F.heatBins(G, bs0, 2).rating[0];
+        };
+        var band = function (name, list, lo, hi) { tryCheck("heat", name, function () { var r = heat(list); return { ok: r >= lo - 1e-9 && r <= hi + 1e-9, detail: r.toFixed(2) + " (want " + lo + "–" + hi + ")" }; }); };
+        band("one game on USA, up 18: close to free", [["USA", 18]], 0.1, 0.5);
+        band("one game on TNT, one-score: still under 0.5", [["TNT", 3]], 0.1, 0.5);
+        band("one game on FOX, up 20: under 0.5", [["FOX", 20]], 0.1, 0.5);
+        band("one one-score game on ESPN: a pretty good game", [["ESPN", 4]], 0.6, 0.9);
+        band("one one-score game on FOX sneaks into the 1s", [["FOX", 4]], 1.0, 1.9);
+        band("three 20-point games on FOX / ABC / ESPN: the 1s", [["FOX", 20], ["ABC", 21], ["ESPN", 20]], 1.0, 1.9);
+        band("two one-score (ESPN, ESPN+) and two blowouts: the 2s", [["ESPN", 3], ["ESPN+", 7], ["FOX", 28], ["BTN", 21]], 2.0, 2.9);
+        band("three one-score games on FOX / ESPN / ESPN+: quadbox", [["FOX", 3], ["ESPN", 7], ["ESPN+", 6]], 3.0, 3.9);
+        band("five within a touchdown on FOX, ESPN and ESPN+: the top band", [["FOX", 3], ["FOX", 7], ["ESPN", 6], ["ESPN", 1], ["ESPN+", 4]], 4.0, 5.0);
+        tryCheck("heat", "sixteen un-kicked games due in the same block reach red before anyone knows which are close", function () {
+          var chs = ["FOX", "ABC", "ESPN", "ESPN2", "BTN", "SECN", "ACCN", "ESPNU", "ESPN+", "ESPN+", "ESPN+", "ESPN+", "FloSports", "SWAC TV", "CBSSN", "Peacock"];
+          var G = chs.map(function (c, i) { var g = mk("s" + i, { state: "pre", period: 0, clockSec: 900, hs: 0, as: 0, margin: 0, chans: [c], spread: [3, 7, 10, 17][i % 4], line: { side: "home" }, c5: bs0 + 187, end: bs0 + 206, conf: "sched" });
+            g.w = F.gameWeight(g); return g; });
+          var r = F.heatBins(G, bs0, 20).rating, mx = Math.max.apply(null, r);
+          return { ok: mx >= 4.0, detail: "peak " + mx.toFixed(2) };
+        });
+        tryCheck("heat", "a block's number moves with the scoreboard: same five games, one-score vs up 20+", function () {
+          var c = heat([["FOX", 3], ["FOX", 7], ["ESPN", 6], ["ESPN", 1], ["ESPN+", 4]]), b = heat([["FOX", 23], ["FOX", 27], ["ESPN", 26], ["ESPN", 21], ["ESPN+", 24]]);
+          return { ok: c >= 4 && b < 2, detail: c.toFixed(2) + " vs " + b.toFixed(2) };
+        });
+      }
       tryCheck("priority", "same game: CBS > ESPN+ = SWAC TV = FloSports > ESPN > Peacock > CBSSN = TNT = USA", function () {
         var v = ["CBS", "ESPN+", "SWAC TV", "FloSports", "ESPN", "Peacock", "CBSSN", "TNT", "USA"].map(function (c) { return q4(c, 21, 17); });
         var ok = v[0] > v[1] && v[1] === v[2] && v[2] === v[3] && v[3] > v[4] && v[4] > v[5] && v[5] > v[6] && v[6] === v[7] && v[7] === v[8];
@@ -4968,7 +5007,7 @@ HUB.start();
       tryCheck("priority", "before the end it is an expectation: pick'em > 28-point spread; Q2 by 20 is not written off", function () {
         var pre = function (sp) { return W({ state: "pre", period: 0, clockSec: 900, hs: 0, as: 0, margin: 0, spread: sp, line: { side: "home" } }); };
         var q2 = W({ period: 2, clockSec: 600, hs: 27, as: 7, margin: 20 }), q4b = q4("ESPN", 27, 7), one = q4("ESPN", 21, 17);
-        return { ok: pre(1) > pre(28) * 2 && pre(1) < one && q2 > q4b * 1.5,
+        return { ok: pre(1) > pre(28) * 1.5 && pre(1) < one && q2 > q4b * 1.2,
           detail: "pre −1 " + pre(1).toFixed(2) + " · pre −28 " + pre(28).toFixed(2) + " · Q2 by 20 " + q2.toFixed(2) + " · Q4 by 20 " + q4b.toFixed(2) + " · Q4 by 4 " + one.toFixed(2) };
       });
       if (F.crunchETA) tryCheck("priority", "pill follows closeness, not channel", function () {
@@ -4994,12 +5033,48 @@ HUB.start();
           if (Math.abs(eZ - Z.fin) > .6 || eZ > nowM + .6) bad.push("finished block ends " + F.hhmm12(eZ) + ", ended " + F.hhmm12(Z.fin));
           if (stub !== en) bad.push("stub " + stub);
           if (row.indexOf("5:00 ≈" + c5) < 0 || row.indexOf("end ≈" + en) < 0) bad.push("row: " + row);
-          if (plan.indexOf(c5) < 0 || plan.indexOf("final " + en) < 0) bad.push("cards: " + plan.slice(0, 90));
+          if (plan.indexOf("last 5:00 " + c5) < 0 || plan.indexOf("final " + en) < 0) bad.push("day pane: " + plan.slice(0, 90));
+          if (sa.querySelectorAll(".win > div").length > 6) bad.push("more than six cards");
           return { ok: !bad.length, detail: bad.length ? bad.join("; ") : "5:00 " + c5 + " · final " + en };
         } finally {
           F.S.showFinal = keep.fin; F.ST.games = keep.games; F.ST.err = keep.err; F.setEst(keep.games);
           try { F.renderGuide(); } catch (e) {}
         }
+      });
+    }
+
+    /* --- 12c. break windows: 95% end of one game → 5% crunch start of the next --- */
+    if (F.breakWindows && F.q05 && F.q95 && F.gameWeight && H) {
+      var nowB = (Date.now() - F.ST.dayStart) / 6e4;
+      var bg = function (id, c5, end, o) {
+        var g = { id: id, sport: "cfb", group: "fbs", kick: c5 - 180, state: "in", period: 3, clockSec: 400, hs: 21, as: 17, margin: 4, chans: ["ESPN"], conf: "live", crunch: false,
+          home: { abbreviation: "H" }, away: { abbreviation: "A" }, c5: c5, end: end, line: { side: null } };
+        for (var k in (o || {})) g[k] = o[k];
+        g.tier = H.tierOf(g.chans[0]); g.w = F.gameWeight(g); return g;
+      };
+      tryCheck("day", "a gap runs from one game's 95% end to the next game's 5% crunch start, to the minute", function () {
+        var A = bg("A", nowB + 61, nowB + 83), B = bg("B", nowB + 203, nowB + 224);
+        var W = F.breakWindows([A, B], nowB, 30), sg = F.sigOf(A);
+        var want = [[nowB, F.q05(A.c5, sg)], [F.q95(A.end, sg), F.q05(B.c5, sg)]];
+        var ok = W.length === 2 && W.every(function (w, i) { return Math.abs(w.t - want[i][0]) < .01 && Math.abs(w.end - want[i][1]) < .01 && w.clear; });
+        return { ok: ok, detail: W.map(function (w) { return "+" + (w.t - nowB).toFixed(1) + "→+" + (w.end - nowB).toFixed(1); }).join(", ") + " min" };
+      });
+      tryCheck("day", "a 20-point USA game in the middle of a gap: both clear halves, and the long one that sits through it", function () {
+        var A = bg("A", nowB + 61, nowB + 83), M = bg("M", nowB + 150, nowB + 168, { chans: ["USA"], hs: 30, as: 10, margin: 20 }), B = bg("B", nowB + 260, nowB + 281);
+        var W = F.breakWindows([A, M, B], nowB, 15), clear = W.filter(function (w) { return w.clear; }), paid = W.filter(function (w) { return !w.clear; });
+        var sg = F.sigOf(A), long = paid.filter(function (w) { return Math.abs(w.t - F.q95(A.end, sg)) < .01 && Math.abs(w.end - F.q05(B.c5, sg)) < .01; })[0];
+        return { ok: clear.length === 3 && !!long && long.skip.length === 1 && long.skip[0].g === M && long.cost > .8 * M.w && long.cost < M.w + .1,
+          detail: clear.length + " clear, " + paid.length + " priced; long one skips " + (long ? long.cost.toFixed(2) : "?") + " pts" };
+      });
+      tryCheck("day", "windows move when the estimate moves, and never outrank the cap or repeat each other", function () {
+        var A = bg("A", nowB + 61, nowB + 83), B = bg("B", nowB + 203, nowB + 224);
+        var w1 = F.breakWindows([A, B], nowB, 30)[1];
+        A.end += 7; B.c5 -= 4;
+        var w2 = F.breakWindows([A, B], nowB, 30)[1];
+        var many = []; for (var i = 0; i < 40; i++) many.push(bg("m" + i, nowB + 40 + i * 9, nowB + 60 + i * 9, { chans: [i % 3 ? "ESPN+" : "FOX"] }));
+        var W = F.breakWindows(many, nowB, 20);
+        return { ok: Math.abs((w2.t - w1.t) - 7) < .01 && Math.abs((w2.end - w1.end) + 4) < .01 && W.length <= 6 && W.every(function (w) { return w.cost <= 3 + 1e-9; }),
+          detail: "start +" + (w2.t - w1.t).toFixed(1) + ", end " + (w2.end - w1.end).toFixed(1) + "; 40 overlapping games → " + W.length + " windows" };
       });
     }
 
