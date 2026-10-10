@@ -258,6 +258,10 @@ footer#notes b{color:#8496ac;font-weight:600}
    push the buttons around. */
 #boardView .lcell{display:flex;align-items:center;gap:5px;justify-content:flex-end;flex-wrap:nowrap}
 #boardView .lcell .dage.stuck{color:var(--hot)}
+#boardView .lcell{position:relative}
+#boardView .lcell .cest{position:absolute;right:0;top:100%;margin-top:3px;white-space:nowrap;
+    font-style:normal;font:500 9px var(--mono);color:var(--dimmer);pointer-events:auto}
+#boardView .lcell .cest.now{color:var(--hot)}
 #boardView .lcell .dage{font-style:normal;font:600 9px var(--mono);color:var(--dimmer);
     width:30px;text-align:right;flex:none}
 #boardView .tsite{color:inherit;text-decoration:none;border-bottom:1px dotted var(--dimmer)}
@@ -294,6 +298,9 @@ footer#notes b{color:#8496ac;font-weight:600}
 #boardView .mid .strip{font-size:9.5px}
 #boardView .chips{grid-area:chips}
 #boardView .acts.lcell{grid-area:acts;flex-wrap:nowrap;gap:5px;justify-content:flex-end}
+/* phone: the actions are the row's last line, so the estimate lives inside the
+   11px bottom padding (1px gap + 10px line) instead of making the row taller */
+#boardView .lcell .cest{margin-top:1px;line-height:10px}
 #boardView .chips{flex-wrap:wrap;align-content:center}
 #boardView .lcell .dage{width:26px}
 #boardView .btn{padding:5px 9px;font-size:11px}
@@ -2272,6 +2279,34 @@ function endCDF(x,m,s1){const s2=s1*SKEW,k=s1/(s1+s2);
   return x<m?2*k*Phi((x-m)/s1):k+2*(s2/(s1+s2))*(Phi((x-m)/s2)-.5);}
 const sigOf=g=>SIG[g.conf]||10;
 const q10=(m,s)=>m-1.1503*s, q90=(m,s)=>m+2.0745*s;
+/* 5th/95th percentiles of the same skewed distribution — the 90% interval. Solved
+   numerically from endCDF (CDF(lo)=.0500, CDF(hi)=.9500 at every sigma). */
+const q05=(m,s)=>m-1.5341*s, q95=(m,s)=>m+2.5975*s;
+
+/* Per-game crunch estimate for the live board: when the clock should read 5:00 of
+   the fourth, with a 90% interval. Built from TODAY's slate only — the board always
+   shows today — and refreshed before the board renders, because the timeline's
+   HUB subscriber is registered first. Same c5 and sigma as the pill and day plan. */
+let EST={};
+function setEst(games){
+  const m={};
+  for(const g of games){
+    if(g.state==="post")continue;
+    const s=sigOf(g);
+    m[g.id]={now:!!(g.crunch||(g.state==="in"&&g.period>4)),ot:g.state==="in"&&g.period>4,
+      c5:g.c5,lo:g.c5==null?null:q05(g.c5,s),hi:g.c5==null?null:q95(g.c5,s),conf:g.conf};
+  }
+  EST=m;
+}
+HUB.crunchEst=function(id){
+  const e=EST[id];if(!e)return null;
+  if(e.now)return{txt:e.ot?"OT":"crunch now",title:"In crunch now"};
+  if(e.c5==null)return null;
+  const a=hhmm12(e.lo),b=hhmm12(e.hi);
+  return{txt:"≈"+hhmm12(e.c5)+" · "+(a.slice(-1)===b.slice(-1)?a.slice(0,-1):a)+"–"+b,
+    title:"Projected crunch (5:00 left in Q4): "+hhmm12(e.c5)+". 90% interval "+a+"–"+b+
+      ". Basis: "+(e.conf||"schedule")+"."};
+};
 
 /* ===================== game weight, 0.0 – 5.0 =================== */
 const rankPts=r=>(!r||r>25)?0:r<=5?1.0:r<=10?.85:r<=15?.75:.65;
@@ -2839,6 +2874,7 @@ const todayLive=()=>$("#date").value===todayYMD();
 function ingest(raw,at){
   const now=(Date.now()-ST.dayStart)/6e4;
   ST.games=normalize(raw,ST.dayStart,now).filter(g=>g.kick>=DAY0&&g.kick<DAY1);
+  if(todayLive())setEst(ST.games);
   prune();saveStall();if(HUB.flushLines)HUB.flushLines();
   /* Only today's slate may repaint the header. Parking the board on another date
      used to run that day's games through updateCrunch, which emptied the pill —
@@ -2878,7 +2914,7 @@ function fromHub(st){
     /* The timeline is on another date, but the header still owes an answer about
        today, so today's slate is normalised on its own. */
     const ds=localMidnight(todayYMD(),S.tz),n=(Date.now()-ds)/6e4;
-    try{updateCrunch(normalize(st.raw,ds,n),ds,n);}catch(e){}
+    try{const tg=normalize(st.raw,ds,n);setEst(tg);updateCrunch(tg,ds,n);}catch(e){}
     return;
   }
   ST.dayStart=localMidnight($("#date").value,S.tz);
@@ -3687,6 +3723,14 @@ function gameCell(g, hot) {
     '</div>';
 }
 
+/* the crunch estimate, absolutely positioned under League/Box/Mkt/Δ so it never
+   moves the buttons or changes the row height */
+function estLine(g) {
+  var e = HUB.crunchEst ? HUB.crunchEst(g.id) : null;
+  if (!e) return '';
+  return '<i class="cest' + (e.title === 'In crunch now' ? ' now' : '') + '" title="' + esc(e.title) + '">' +
+    esc(e.txt) + '</i>';
+}
 function rowHTML(g, isNew, hot) {
   var live = g.state === 'in';
   var mkt = mktUrl(g);
@@ -3702,7 +3746,7 @@ function rowHTML(g, isNew, hot) {
     (isNew ? ' new' : '') + '" data-id="' + esc(g.id) + '">' +
     gameCell(g, hot) +
     chips(g) +
-    '<div class="acts lcell">' + boxCell + '</div></div>';
+    '<div class="acts lcell">' + boxCell + estLine(g) + '</div></div>';
 }
 
 /* A system notification per game entering crunch, so the alert reaches you when
@@ -3776,11 +3820,11 @@ function renderStatus() {
     var id = ds[d2].dataset.for, t0 = sigTimes[id];
     var sec = t0 ? Math.max(0, Math.round((now - t0) / 1000)) : null;
     ds[d2].textContent = sec == null ? '' : 'Δ' + sec + 's';
-    /* 90 seconds without the clock or score moving, in a live game that is not at
+    /* Over 180 seconds without the clock or score moving, in a live game that is not at
        halftime, is long enough that the feed may be behind the broadcast */
     var g2 = null;
     for (var gi = 0; gi < games.length; gi++) if (games[gi].id === id) { g2 = games[gi]; break; }
-    var stuck = sec != null && sec >= 90 && g2 && g2.state === 'in' && g2.periodLabel !== 'HALF';
+    var stuck = sec != null && sec > 180 && g2 && g2.state === 'in' && g2.periodLabel !== 'HALF';
     ds[d2].classList.toggle('stuck', !!stuck);
     ds[d2].title = stuck
       ? 'Nothing has moved in the feed for ' + sec + 's — ESPN may be behind the broadcast. The page is checking this game directly.'
@@ -3818,6 +3862,7 @@ function rowSig(g, hot) {
     (g.home && g.home.possession ? 'h' : '') + (g.away && g.away.possession ? 'a' : ''),
     g.odds ? (g.odds.details || '') + '/' + g.odds.overUnder : '',
     g.home && g.home.logo ? 1 : 0, g.away && g.away.logo ? 1 : 0,
+    (HUB.crunchEst && HUB.crunchEst(g.id) || {}).txt || '',
     F.mkt].join('|');
 }
 function scoreSig(g) {
