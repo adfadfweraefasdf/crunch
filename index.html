@@ -2471,7 +2471,27 @@ function erf(x){const g=x<0?-1:1;x=Math.abs(x);
 const Phi=z=>.5*(1+erf(z/Math.SQRT2));
 function endCDF(x,m,s1){const s2=s1*SKEW,k=s1/(s1+s2);
   return x<m?2*k*Phi((x-m)/s1):k+2*(s2/(s1+s2))*(Phi((x-m)/s2)-.5);}
-const sigOf=g=>SIG[g.conf]||10;
+/* How wide an estimate is depends on how far away the moment is, not only on how the
+   estimate was made. The spread used to be one constant per basis — 5 minutes for any
+   live game — so with 5:05 on the clock the row still said "1:51–2:12p", an interval
+   that started before the current time. Now: 8% of the wall minutes still to go
+   (pregame error measured ~10 min over ~3 h; the right tail is 1.5x that), never more
+   than the basis' old constant, never under half a minute. Halftime and overtime keep
+   a 2-minute floor (the break is a guess); a weather delay keeps its full 25.
+   `t` is the moment being estimated; a game without g.now (not from the feed) keeps
+   the old constant. */
+const SIG_FRAC=0.08;
+function sigOf(g,t){
+  const cap=SIG[g.conf]||10;
+  if(g.now==null||t==null||g.conf==="delay")return cap;
+  const floor=g.conf==="half"||g.conf==="ot"?2:.5;
+  return Math.min(cap,Math.max(floor,SIG_FRAC*Math.max(0,t-g.now)));
+}
+/* The four edges every surface prints. Nothing can have happened before now. */
+const c5Lo=g=>Math.max(g.now==null?-1e9:g.now,q05(g.c5,sigOf(g,g.c5)));
+const c5Hi=g=>q95(g.c5,sigOf(g,g.c5));
+const endLo=g=>Math.max(g.now==null?-1e9:g.now,q05(g.end,sigOf(g,g.end)));
+const endHi=g=>q95(g.end,sigOf(g,g.end));
 const q10=(m,s)=>m-1.1503*s, q90=(m,s)=>m+2.0745*s;
 /* 5th/95th percentiles of the same skewed distribution — the 90% interval. Solved
    numerically from endCDF (CDF(lo)=.0500, CDF(hi)=.9500 at every sigma). */
@@ -2490,7 +2510,7 @@ const saveFin=()=>{try{localStorage.setItem("fb.fin",JSON.stringify(FIN));}catch
 /* The ONE definition of where a game's span stops, for every drawing on the page:
    spanEnd = projected final (or the real one), spanHi = its 95th percentile. */
 const spanEnd=g=>g.state==="post"?g.fin:g.end;
-const spanHi=g=>g.state==="post"?g.fin:(g.end==null?null:q95(g.end,sigOf(g)));
+const spanHi=g=>g.state==="post"?g.fin:(g.end==null?null:endHi(g));
 /* Inside the last 5:00 and more than two scores apart: the crunch rule has already
    said no, so this game no longer asks for you. (Within 16 it stays in — a change of
    possession can put it back in crunch.) */
@@ -2499,7 +2519,7 @@ function decided(g){
   return (g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG&&g.margin>HUB.CRUNCH_MARGIN;
 }
 window.__FC.spanEnd=spanEnd;window.__FC.spanHi=spanHi;
-window.__FC.setEst=g=>setEst(g);window.__FC.hhmm12=m=>hhmm12(m);window.__FC.q05=q05;window.__FC.q95=q95;window.__FC.sigOf=sigOf;window.__FC.decided=decided;
+window.__FC.setEst=g=>setEst(g);window.__FC.hhmm12=m=>hhmm12(m);window.__FC.q05=q05;window.__FC.q95=q95;window.__FC.sigOf=sigOf;window.__FC.c5Lo=c5Lo;window.__FC.c5Hi=c5Hi;window.__FC.endHi=endHi;window.__FC.decided=decided;
 
 /* Per-game crunch estimate for the live board: when the clock should read 5:00 of
    the fourth, with a 90% interval. Built from TODAY's slate only — the board always
@@ -2510,10 +2530,9 @@ function setEst(games){
   const m={};
   for(const g of games){
     if(g.state==="post")continue;
-    const s=sigOf(g);
     m[g.id]={now:!!(g.crunch||(g.state==="in"&&g.period>4)),ot:g.state==="in"&&g.period>4,
-      c5:g.c5,lo:g.c5==null?null:q05(g.c5,s),hi:g.c5==null?null:q95(g.c5,s),conf:g.conf,
-      end:g.end,endHi:g.end==null?null:q95(g.end,s)};
+      c5:g.c5,lo:g.c5==null?null:c5Lo(g),hi:g.c5==null?null:c5Hi(g),conf:g.conf,
+      end:g.end,endHi:g.end==null?null:endHi(g)};
   }
   EST=m;
 }
@@ -2525,7 +2544,9 @@ HUB.crunchEst=function(id){
   if(e.now)return{now:true,txt:(e.ot?"OT":"crunch now")+fin,title:"In crunch now."+finT};
   if(e.c5==null)return null;
   const a=hhmm12(e.lo),b=hhmm12(e.hi);
-  return{txt:"5:00 ≈"+hhmm12(e.c5)+" · "+(a.slice(-1)===b.slice(-1)?a.slice(0,-1):a)+"–"+b+fin,
+  /* a range that is one minute wide says nothing the point does not */
+  const rng=a===b?"":" · "+(a.slice(-1)===b.slice(-1)?a.slice(0,-1):a)+"–"+b;
+  return{txt:"5:00 ≈"+hhmm12(e.c5)+rng+fin,
     title:"Clock reads 5:00 of Q4: "+hhmm12(e.c5)+". 90% interval "+a+"–"+b+"."+finT+
       " Basis: "+(e.conf||"schedule")+"."};
 };
@@ -2696,6 +2717,7 @@ function normalize(raw,dayStart,now){
         else if(dR>=2.5){stallBank[g.id]=(stallBank[g.id]||0)+(dR-.6);paceSeen[g.id]={t:now,eg};}}
       g.stall=stallBank[g.id]||0;
     }
+    g.now=now;                                           // every interval is measured from here
     g.rem=HUB.regRemaining(state,g.period,g.clockSec);
     g.trailBall=k.trailBall;
     g.crunch=state==="in"&&HUB.isCrunch(g.rem,g.margin,g.trailBall);
@@ -2751,14 +2773,14 @@ function heatBins(games,t0,n){
   const raw=new Array(n).fill(0),who=Array.from({length:n},()=>[]);
   for(const g of games){
     if(g.state==="post"||g.c5==null||!(g.w>0))continue;
-    const s1=sigOf(g),end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
+    const end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch,s1=sigOf(g,g.c5),sE=sigOf(g,end);
     const inside=g.state==="in"&&(g.crunch||g.period>4||(g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG);
-    const lo=inside?t0:g.c5-3.5*s1-15,hi=end+3.5*s1*SKEW;
+    const lo=inside?t0:g.c5-3.5*s1-15,hi=end+3.5*sE*SKEW;
     const i0=Math.max(0,Math.floor((lo-t0)/15)),i1=Math.min(n-1,Math.ceil((hi-t0)/15));
     for(let i=i0;i<=i1;i++){
       const bs=t0+i*15,be=bs+15;
       if(inside&&be<g.c5-1)continue;                       // blocks already behind us
-      const pr=(inside?1:endCDF(be-3,g.c5,s1))-endCDF(bs+3,end,s1);
+      const pr=(inside?1:endCDF(be-3,g.c5,s1))-endCDF(bs+3,end,sE);
       const v=g.w*Math.max(0,pr);
       if(v>.004){raw[i]+=v;if(pr>.12)who[i].push(g);}
     }
@@ -2947,7 +2969,7 @@ function laneRow(nm,tier,list,t0,W,VL){
   const h=Math.max(1,sub.length)*26,cls0=CLASS[tier];
   let bars="";
   sub.forEach((row,ri)=>row.items.forEach(g=>{
-    const s1=sigOf(g),e=endOf(g),hi=hiOf(g),open=g.state!=="post";
+    const e=endOf(g),hi=hiOf(g),open=g.state!=="post";
     const left=px(g.kick-t0),w=Math.max(px(e-g.kick),30);
     const sim=g.chans.indexOf(nm)>0;
     const cls=[cls0,g.state==="in"?"live":"",g.state==="post"?"final":"",sim?"sim":"",
@@ -2957,7 +2979,7 @@ function laneRow(nm,tier,list,t0,W,VL){
     const sc=g.state==="pre"?"":`<span class="sc">${g.as}-${g.hs}${g.state==="in"?" · "+esc(g.detail):" F"}</span>`;
     let zone="",stub="",tip;
     if(open&&g.c5!=null){
-      const a=Math.max(g.kick+20,q05(g.c5,s1)),span=Math.max(e-a,4),at=Math.max(0,Math.min(100,(g.c5-a)/span*100)).toFixed(1);
+      const a=Math.max(g.kick+20,c5Lo(g)),span=Math.max(e-a,4),at=Math.max(0,Math.min(100,(g.c5-a)/span*100)).toFixed(1);
       zone=`<div class="tail" style="left:${px(a-g.kick)}px;width:${px(span)}px;background:linear-gradient(90deg,`
         +`rgba(255,210,63,0) 0%,rgba(255,210,63,.10) ${at}%,rgba(255,210,63,.30) ${at}%,rgba(255,210,63,.30) 100%)"></div>`
         +`<div class="e50" style="left:${px(g.c5-g.kick)}px"></div>`;
@@ -3022,9 +3044,9 @@ const HOLD_MIN_W=0.10,WIN_MAX=6,WIN_STEP=0.25;
 const winCap=()=>{const v=+S.winHeat;return v>=0&&v<=3?v:DEF.winHeat;};
 function holdOf(g){
   if(g.state==="post"||g.c5==null||!(g.w>=HOLD_MIN_W))return null;
-  const sg=sigOf(g),end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
+  const end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
   const inside=g.state==="in"&&(g.crunch||g.period>4||(g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG);
-  return{lo:inside?-1e9:q05(g.c5,sg),hi:q95(end,sg),g};
+  return{lo:inside?-1e9:c5Lo(g),hi:q95(end,sigOf(g,end)),g};
 }
 /* What a window costs: the heat-strip sum over the window instead of over a block —
    Σ points × P(the game is inside its last 5:00 at some time in the window). So a
@@ -3036,14 +3058,14 @@ function breakWindows(G,from,minLen){
   if(from!=null)starts.push({t:from,g:null});
   Hd.forEach(h=>{if(from==null||h.hi>from)starts.push({t:h.hi,g:h.g});});
   const ends=Hd.filter(h=>h.lo>-1e8&&(from==null||h.lo>from));
-  const meta=Hd.map(h=>{const g=h.g,sg=sigOf(g);
-    return{g,sg,inside:h.lo<-1e8,end:g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch};});
+  const meta=Hd.map(h=>{const g=h.g,end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
+    return{g,s5:sigOf(g,g.c5),sE:sigOf(g,end),inside:h.lo<-1e8,end};});
   /* P(crunch has started by each possible end), P(game is over by each possible start) */
-  const Fc=ends.map(e=>meta.map(m=>m.inside?1:endCDF(e.lo,m.g.c5,m.sg)));
+  const Fc=ends.map(e=>meta.map(m=>m.inside?1:endCDF(e.lo,m.g.c5,m.s5)));
   /* quarter-point heat bands: per start, the longest window in each band */
   const CAP=winCap(),band=c=>Math.ceil(Math.max(c,1e-9)/WIN_STEP),all=[];
   for(const st of starts){
-    const Fe=meta.map(m=>endCDF(st.t,m.end,m.sg));
+    const Fe=meta.map(m=>endCDF(st.t,m.end,m.sE));
     let best={};                                   // longest window per tier from this start
     for(let j=0;j<ends.length;j++){
       const e=ends[j].lo,len=e-st.t;
@@ -3123,9 +3145,9 @@ function endingsPane(G){
   live.sort((a,b)=>{const x=val(a),y=val(b);return(x>y?1:x<y?-1:0)*dir});
   const rows=live.map(g=>`<tr data-id="${g.id}">
     <td class="n">${g.c5==null?"—":hhmm12(g.c5)}${g.delay>5?` <span style="color:var(--live)">+${g.delay}</span>`:""}
-      ${g.c5==null?"":`<span style="color:var(--dim2)">${hhmm12(q05(g.c5,sigOf(g))).replace(/[ap]$/,"")}–${hhmm12(q95(g.c5,sigOf(g)))}</span>`}</td>
+      ${g.c5==null?"":`<span style="color:var(--dim2)">${hhmm12(c5Lo(g)).replace(/[ap]$/,"")}–${hhmm12(c5Hi(g))}</span>`}</td>
     <td class="n">${g.end==null?"—":hhmm12(g.end)}
-      ${g.end==null?"":`<span style="color:var(--dim2)">by ${hhmm12(q95(g.end,sigOf(g)))}</span>`}</td>
+      ${g.end==null?"":`<span style="color:var(--dim2)">by ${hhmm12(endHi(g))}</span>`}</td>
     <td class="n">${hhmm12(g.kick)}</td>
     <td>${matchup(g,true)}</td>
     <td class="n sc">${g.state==="pre"?(g.odds?esc(g.odds):"—"):g.as+"-"+g.hs}</td>
@@ -3161,9 +3183,9 @@ function bindStage(H,G){
       ${g.odds?`<div class="r"><span>Line</span><b>${esc(g.odds)}</b></div>`:""}
       ${g.state==="post"?`<div class="r"><span>Ended</span><b>${g.fin==null?"final":(g.finEst?"≈":"")+hhmm12(g.fin)}</b></div>`:
        `<div class="r"><span>5:00 left</span><b>${g.c5==null?"—":(g.crunch||g.period>4?"now":"≈"+hhmm12(g.c5))}</b></div>
-        ${g.c5==null||g.crunch||g.period>4?"":`<div class="r"><span>&nbsp; 90% range</span><b>${hhmm12(q05(g.c5,sigOf(g)))} – ${hhmm12(q95(g.c5,sigOf(g)))}</b></div>`}
+        ${g.c5==null||g.crunch||g.period>4?"":`<div class="r"><span>&nbsp; 90% range</span><b>${hhmm12(c5Lo(g))} – ${hhmm12(c5Hi(g))}</b></div>`}
         <div class="r"><span>Final</span><b>${g.end==null?"—":"≈"+hhmm12(g.end)}</b></div>
-        ${g.end==null?"":`<div class="r"><span>&nbsp; 90% range</span><b>${hhmm12(q05(g.end,sigOf(g)))} – ${hhmm12(q95(g.end,sigOf(g)))}</b></div>`}`}
+        ${g.end==null?"":`<div class="r"><span>&nbsp; 90% range</span><b>${hhmm12(endLo(g))} – ${hhmm12(endHi(g))}</b></div>`}`}
       <div class="r"><span>Basis</span><b>${g.state==="pre"?"schedule avg":g.conf}</b></div>
       ${g.delay>3?`<div class="r"><span>Banked delay</span><b style="color:var(--live)">${g.delay} min</b></div>`:""}
       <div class="r"><span>League</span><b>${g.sport==="nfl"?"NFL":"College (FBS)"}</b></div>
@@ -5038,6 +5060,29 @@ HUB.start();
           F.S.showFinal = keep.fin; F.ST.games = keep.games; F.ST.err = keep.err; F.setEst(keep.games);
           try { F.renderGuide(); } catch (e) {}
         }
+      });
+    }
+
+    /* --- 12b2. an interval narrows as the moment approaches and never starts in the past --- */
+    if (F.c5Lo && F.c5Hi && F.endHi && F.setEst && F.hhmm12 && H) {
+      var nowI = (Date.now() - F.ST.dayStart) / 6e4;
+      var ig = function (dc5, dend, conf) { return { id: "__i", state: "in", period: 4, clockSec: 305, conf: conf || "live", crunch: false, now: nowI, c5: nowI + dc5, end: nowI + dend }; };
+      [[0.3, 21, 2, "5:05 on the clock"], [7, 28, 3, "7 minutes out"], [20, 41, 7, "20 minutes out"], [150, 172, 55, "2.5 hours out (un-kicked)", "sched"]].forEach(function (c) {
+        tryCheck("interval", c[3] + ": 5:00 range starts no earlier than now and is at most " + c[2] + " min wide", function () {
+          var g = ig(c[0], c[1], c[4]), lo = F.c5Lo(g), hi = F.c5Hi(g);
+          return { ok: lo >= nowI - 1e-9 && hi - lo <= c[2] && hi >= g.c5 && F.endHi(g) >= g.end, detail: "−" + (g.c5 - lo).toFixed(1) + " / +" + (hi - g.c5).toFixed(1) + " min; final +" + (F.endHi(g) - g.end).toFixed(1) };
+        });
+      });
+      tryCheck("interval", "a far-off game keeps its measured spread; a delayed one keeps the full 25", function () {
+        var far = ig(200, 222, "sched"), dl = ig(10, 30, "delay");
+        return { ok: Math.abs(F.sigOf(far, far.c5) - 13) < 1e-9 && F.sigOf(dl, dl.c5) === 25 };
+      });
+      tryCheck("interval", "row line at 5:05: no range from before the current minute", function () {
+        var g = ig(0.3, 21); g.id = "__i5";
+        try { F.setEst([g]); var t = (H.crunchEst("__i5") || {}).txt || "";
+          var m = t.match(/· (\d+:\d\d)[ap]?–/), ok = !m || m[1] === F.hhmm12(nowI).replace(/[ap]$/, "") || m[1] === F.hhmm12(nowI + 1).replace(/[ap]$/, "");
+          return { ok: ok && t.indexOf("5:00 ≈" + F.hhmm12(g.c5)) === 0, detail: t };
+        } finally { F.setEst(F.ST.games); }
       });
     }
 
