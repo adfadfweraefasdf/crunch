@@ -533,6 +533,13 @@ footer#notes b{color:#8496ac;font-weight:600}
 #guideView td.sc{color:var(--txt);font-weight:600;font-size:12px}
 #guideView #cfg label.col{flex-direction:column;align-items:stretch;gap:4px}
 #guideView #cfg input[type=text]{width:100%}
+#guideView #cfg table.tiers{width:100%;border-collapse:collapse;font-size:10.5px;margin:2px 0 6px}
+#guideView #cfg table.tiers th,#guideView #cfg table.tiers td{padding:2px 3px;text-align:right;white-space:nowrap}
+#guideView #cfg table.tiers th{color:var(--dim2);font-weight:400}
+#guideView #cfg table.tiers td:first-child,#guideView #cfg table.tiers th:first-child{text-align:left;color:var(--dim)}
+#guideView #cfg table.tiers td.use{color:var(--txt);font-weight:700}
+#guideView #cfg table.tiers input{width:42px;text-align:right;padding:1px 3px}
+#guideView #cfg table.tiers input.bad{border-color:#f2585b}
 #guideView #cfg .hint{color:var(--dim2);font-size:10.5px;line-height:1.5;margin:-2px 0 8px}
 #guideView #cfg button.on{background:rgba(240,151,58,.14);border-color:var(--ota);color:var(--ota)}
 
@@ -668,6 +675,12 @@ footer#notes b{color:#8496ac;font-weight:600}
     Every game this browser watches reach 5:00 of the fourth, and every game it watches finish,
     adjusts that network's estimate — the 5:00 point and the final separately, each clamped to ±12%.
     <button id="calReset" type="button">Reset learned pace</button></div>
+  <h2 style="margin-top:14px">CFB game length · listed → final</h2>
+  <table class="tiers" id="tierTbl"></table>
+  <div class="hint" style="grid-column:1/-1">Measured: median of 61 FBS games, Sep 26 + Oct 3 2026, from ESPN play-by-play.
+    Model: what it predicts for a typical game of that class before the spread is known.
+    Yours: type 3:25 or 205 to override that class; blank = model. Learned: this browser's correction from games it watched finish (needs 4).
+    Using: yours if set, else model × learned. The spread and live pace still move each game around this. NFL keeps its own fit.</div>
   <h2 style="margin-top:14px">Heat scale · fixed 0.0–5.0</h2>
   <div class="scale" id="scaleBar"></div>
   <div style="color:var(--dim);line-height:1.55;font-size:11px">
@@ -1469,16 +1482,64 @@ var HUB = (function () {
       return false;
     });
   }
+  /* ---------------------- actual kickoff ----------------------
+     ESPN lists a game at its window time; the ball is kicked 5-15 minutes later
+     (measured 2026-10-03: +6.1, +7.6, +15.0). The pace model used to start its clock
+     at the listing, read that lag as slow football and stretch it over the rest of
+     the game — +17 min of overestimate at the end of Q1 for a 7-minute lag, +27 for
+     a primetime 15. The first plays page carries the kickoff's wall-clock stamp, so
+     each live game is asked once, and the answer is kept for the day. */
+  var KICK_KEY = "fb.kicks", KICK = {}, KTRIED = {};
+  try {
+    var kk = JSON.parse(localStorage.getItem(KICK_KEY) || "null");
+    if (kk && kk.d === new Date().toDateString()) KICK = kk.v || {};
+  } catch (e) {}
+  function kickSave() {
+    try { localStorage.setItem(KICK_KEY, JSON.stringify({ d: new Date().toDateString(), v: KICK })); } catch (e) {}
+  }
+  /* exported for the parser test: the first period-1 play typed Kickoff, earliest
+     stamp wins — stamps are not strictly ordered (a timeout can carry an earlier
+     time than the kickoff logged after it) */
+  function kickFromPlays(j) {
+    var items = (j && j.items) || [], best = null;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i] || {}, per = it.period && it.period.number, ty = it.type && it.type.text;
+      if (per !== 1 || !/kick\s*off/i.test(ty || "") || typeof it.wallclock !== "string") continue;
+      var t = Date.parse(it.wallclock);
+      if (isFinite(t) && (best == null || t < best)) best = t;
+    }
+    return best;
+  }
+  function kickCheck(it) {
+    var e = it.e, c = (e.competitions && e.competitions[0]) || {};
+    KTRIED[e.id] = 1;
+    return getJSON(CORE_API + leagueSlug(it.sport) + "/events/" + e.id + "/competitions/" + (c.id || e.id) +
+        "/plays?limit=6&page=1")
+      .then(function (j) {
+        var t = kickFromPlays(j), listed = Date.parse(e.date || c.date || "");
+        /* sanity: a kickoff more than 10 min early or 90 min late is a bad stamp */
+        if (t != null && isFinite(listed) && t - listed > -6e5 && t - listed < 5.4e6) { KICK[e.id] = t; kickSave(); }
+      }).catch(function () {});
+  }
+  function kickNeeded(list) {
+    var out = [];
+    for (var i = 0; i < list.length && out.length < 4; i++) {
+      var e = list[i].e, st = statusOf(e);
+      if (!st || (st.type || {}).state !== "in" || KICK[e.id] || KTRIED[e.id]) continue;
+      out.push(list[i]);
+    }
+    return out;
+  }
   var dInFlight = false;
   function runDirect() {
     if (dInFlight || !live.raw || !live.raw.length) return;
     /* a failure before any success is probably CORS, so stop hammering — but try
        again in five minutes, since it could as easily have been one dropped packet */
     if (DSTAT.blocked) { if (Date.now() - DSTAT.blockedAt < 300000) return; DSTAT.blocked = false; }
-    var list = directCandidates(live.raw, Date.now());
-    if (!list.length) return;
+    var list = directCandidates(live.raw, Date.now()), kl = kickNeeded(live.raw);
+    if (!list.length && !kl.length) return;
     dInFlight = true;
-    Promise.all(list.map(directCheck)).then(function () {
+    Promise.all(list.map(directCheck).concat(kl.map(kickCheck))).then(function () {
       if (applyDirect(live.raw)) emit();          // repaint now, not at the next scoreboard poll
     }).finally(function () { dInFlight = false; });
   }
@@ -1954,6 +2015,8 @@ var lucky=q=>"https://duckduckgo.com/?q="+encodeURIComponent(q);
     localYMD: localYMD,
     pace: function (fn) { paceFn = fn; },
     hot: function (fn) { hotFn = fn; },
+    kickOf: function (id) { return KICK[id] || null; },
+    _kick: { kickFromPlays: kickFromPlays, kickCheck: kickCheck, kickNeeded: kickNeeded, KICK: KICK, KTRIED: KTRIED },
     directStatus: function () { return { ok: DSTAT.ok, fail: DSTAT.fail, lastOk: DSTAT.lastOk,
       lastErr: DSTAT.lastErr, blocked: DSTAT.blocked, tracked: Object.keys(DIRECT).length }; },
     _direct: { applyDirect: applyDirect, directCandidates: directCandidates, progress: progress,
@@ -2013,6 +2076,43 @@ const tierOf=HUB.tierOf,normChan=HUB.normChan;
    NFL, 2026-09-13: J's observed 12pm finals 178/184/186/186/194/202 (median 186) and
    SNF kicked 7:20 → 5:00 at 9:57 → OT at 10:21. reg 163.5 gives 186 on broadcast and
    5:00 at 10:00 for that SNF game. */
+/* listed time → actual kickoff, CFB, minutes. Measured 2026-10-03: 6.1 (FOX),
+   7.6 (CBS), 15.0 (ABC primetime); median 7.6. Used only when the real kickoff
+   hasn't been read from play-by-play. */
+const KICK_LAG=7.5;   // legacy name; CFB now uses CFB_LAG by network class below
+/* ---------------------- CFB by network class ----------------------
+   Refit 2026-10-09 on 61 FBS regulation games (Sep 26 + Oct 3 2026), every time read
+   from ESPN play-by-play wallclocks: listed time, first kickoff, the snap either side
+   of 5:00 in the 4th, End of Game. Three classes, because that is how the games
+   actually split:
+     linear  = broadcast / CW / local affiliate   lag 8.1  kick→final 207.0 (n=15)
+     cable   = ESPN family / cable sports nets    lag 3.0  kick→final 198.2 (n=26)
+     stream  = ESPN+, Peacock, ACCNX, MW+ …        lag 1.2  kick→final 192.1 (n=20)
+   (medians, minutes). Pace factors below are the median per-game implied factor,
+   pooled over each game's 5:00 time and its final, at its actual final margin.
+   Margin matters: a 30-point game runs ~15 min shorter than a one-score game, and
+   streaming games in the sample are mostly blowouts (mean margin 28 vs 14 on
+   linear) — so before kickoff the model averages over a margin distribution instead
+   of assuming a tie: around the spread when there is one (σ 15.5), otherwise around
+   0 with that class's own observed spread of final margins. */
+const CFB_CLS={broadcast:"linear",cw:"linear",local:"linear",espn:"cable",cable:"cable"};
+const CLS_RANK={linear:3,cable:2,stream:1},CLASSES=["linear","cable","stream"];
+const clsOfTier=t=>CFB_CLS[t]||"stream";
+/* a game on several outlets runs at its biggest outlet's pace (ABC + ESPN+ is linear) */
+function clsOf(g){
+  if(!g)return"stream";if(g.cls)return g.cls;
+  let best=null;for(const n of(g.chans||[])){const c=clsOfTier(tierOf(n));if(!best||CLS_RANK[c]>CLS_RANK[best])best=c;}
+  return best||clsOfTier(g.tier);
+}
+const CFB_LAG={linear:8,cable:3,stream:1};            // listed → kickoff, minutes
+const CFB_TF={linear:1.063,cable:1.075,stream:1.040};  // pace vs SPORT.cfb baseline
+const MG_SIG_SPREAD=15.5,MG_NS={linear:17.3,cable:26.7,stream:35.3};
+/* measured medians, listed start → final, for the Settings table */
+const CFB_MEAS={linear:214.8,cable:201.3,stream:193.0},CFB_MEAS_N={linear:15,cable:26,stream:20};
+/* J's own game lengths (listed start → final, minutes), per class; blank = model */
+const TIERS_KEY="fb.tiers";
+let TIERS={};try{TIERS=JSON.parse(localStorage.getItem(TIERS_KEY)||"{}")||{};}catch(e){TIERS={};}
+function tiersSave(){try{localStorage.setItem(TIERS_KEY,JSON.stringify(TIERS));}catch(e){}}
 const SPORT={cfb:{reg:189.8,half:20,ot:11,otP:.55},nfl:{reg:163.5,half:13,ot:14,otP:.45}};
 
 /* ---------------------- learned pace ----------------------
@@ -2027,7 +2127,24 @@ const SPORT={cfb:{reg:189.8,half:20,ot:11,otP:.55},nfl:{reg:163.5,half:13,ot:14,
    Settings. */
 const CAL_KEY="fb.cal",CAL_MIN=4,CAL_LO=.88,CAL_HI=1.12,CAL_KEEP=40;
 let CAL={};try{CAL=JSON.parse(localStorage.getItem(CAL_KEY)||"{}")||{};}catch(e){CAL={};}
-const calKey=(sport,tier)=>sport+":"+(tier||"other");
+/* keyed by sport + network class. `cls` may be passed as a raw tier and is mapped. */
+const calKey=(sport,cls)=>sport+":"+(CLS_RANK[cls]?cls:clsOfTier(cls));
+/* Old stores were keyed by raw tier. NFL samples were measured against a prior that
+   has not changed, so they move to their class. CFB samples were ratios against the
+   pre-2026-10-09 CFB prior (which ran 8-13 min long); against the new prior they
+   would pull every estimate short, so they are dropped. */
+/* "cable" and "stream" were tier names before they were class names, so a key alone
+   cannot say which era it is from: fb.calv marks a store already migrated. */
+const CALV_KEY="fb.calv";
+let CAL_V=0;try{CAL_V=+localStorage.getItem(CALV_KEY)||0;}catch(e){}
+function calMigrate(o){
+  const n={};
+  for(const k in o){if(!Array.isArray(o[k]))continue;const[sp,t]=k.split(":");
+    if(sp==="cfb")continue;
+    const nk=sp+":"+(t==="linear"?"linear":clsOfTier(t));(n[nk]=n[nk]||[]).push(...o[k]);}
+  return{n};
+}
+if(CAL_V<2){CAL=calMigrate(CAL).n;try{localStorage.setItem(CAL_KEY,JSON.stringify(CAL));}catch(e){}}
 function calOf(sport,tier){
   const a=CAL[calKey(sport,tier)];
   if(!a||a.length<CAL_MIN)return 1;
@@ -2047,7 +2164,7 @@ function calRecord(g,realMin){
   /* ratio of PLAYING time — halftime is a fixed constant the factor never scales,
      so including it would under-correct every sample by the halftime's share */
   if(!(realMin>P.half&&pred>P.half))return;
-  const k=calKey(g.sport,g.tier),a=CAL[k]||(CAL[k]=[]);
+  const k=calKey(g.sport,clsOf(g)),a=CAL[k]||(CAL[k]=[]);
   a.push((realMin-P.half)/(pred-P.half));
   if(a.length>CAL_KEEP)a.splice(0,a.length-CAL_KEEP);
   calSave();
@@ -2069,6 +2186,7 @@ const CAL_SEEN={},CAL_LIVE={},CAL5_SEEN={},CAL5_PREV={};
 window.__FC=window.__FC||{};
 const CAL5_KEY="fb.cal5";
 let CAL5={};try{CAL5=JSON.parse(localStorage.getItem(CAL5_KEY)||"{}")||{};}catch(e){CAL5={};}
+if(CAL_V<2){CAL5=calMigrate(CAL5).n;try{localStorage.setItem(CAL5_KEY,JSON.stringify(CAL5));localStorage.setItem(CALV_KEY,"2");}catch(e){}}
 function cal5Of(sport,tier){
   const a=CAL5[calKey(sport,tier)];
   if(!a||a.length<CAL_MIN)return calOf(sport,tier);
@@ -2083,7 +2201,7 @@ function cal5Record(g,realMin){
   const pred=P.half+effSec(g.sport,0,CRUNCH_EG,g.margin)*(P.reg-P.half)/3600*tvFactor(g);
   if(!(pred>0))return;
   if(!(realMin>P.half&&pred>P.half))return;       // playing-time ratio, as above
-  const k=calKey(g.sport,g.tier),a=CAL5[k]||(CAL5[k]=[]);
+  const k=calKey(g.sport,clsOf(g)),a=CAL5[k]||(CAL5[k]=[]);
   a.push((realMin-P.half)/(pred-P.half));
   if(a.length>CAL_KEEP)a.splice(0,a.length-CAL_KEEP);
   cal5Save();
@@ -2091,6 +2209,7 @@ function cal5Record(g,realMin){
 window.__FC.noCal=function(fn){const a=CAL,b=CAL5;CAL={};CAL5={};try{return fn();}finally{CAL=a;CAL5=b;}};
 window.__FC.cal5Record=function(g,m){cal5Record(g,m);};
 window.__FC.calRecord=function(g,m){calRecord(g,m);};
+window.__FC.calMigrate=o=>calMigrate(o).n;window.__FC.clsOf=clsOf;
 /* run fn against empty learned stores and put everything back afterwards — both the
    in-memory stores and their localStorage copies, since the recorders write through */
 window.__FC.sandboxCal=function(fn){
@@ -2124,12 +2243,38 @@ const q4f=(m,sp)=>{for(const[t,v]of Q4M[sp||"cfb"])if(m<=t)return v;return 1;};
    multiplier applies only past 55:00 elapsed, scaled down as the margin grows.
    CFB is left at 1.0 until there are observed college times to fit it against —
    no data, no change. */
-const LATE={cfb:1.0,nfl:1.60};
+const LATE={cfb:1.10,nfl:1.60};   // CFB fitted 2026-10-09: 1.10 makes one pace factor fit both the 5:00 time and the final (ratio 0.998)
 const lateF=(m,sp)=>{const L=LATE[sp||"cfb"];
   return m<=8?L:m<=16?1+(L-1)*.6:m<=24?1+(L-1)*.3:1+(L-1)*.15;};
 function effSec(sp,a,b,mg){const qf=QF[sp];let s=0,c=a;while(c<b){const q=Math.min(3,Math.floor(c/900));
   let e=Math.min(b,(q+1)*900);if(q===3&&c<3300&&e>3300)e=3300;
   let f=qf[q];if(q===3){f*=q4f(mg,sp);if(c>=3300)f*=lateF(mg,sp);}s+=(e-c)*f;c=e;}return s;}
+/* effSec averaged over an uncertain final margin: |N(mu, sig)| on a 25-node grid */
+const ZN=[];for(let z=-3;z<=3.001;z+=.25)ZN.push([z,Math.exp(-z*z/2)]);
+const ZW=ZN.reduce((s,n)=>s+n[1],0);
+function effAvg(sp,a,b,mu,sig){
+  if(!(sig>.5))return effSec(sp,a,b,Math.abs(mu));
+  let s=0;for(const[z,w]of ZN)s+=effSec(sp,a,b,Math.abs(mu+z*sig))*w;return s/ZW;
+}
+/* CFB final-margin belief at elapsed game-seconds eg: the current (signed) margin
+   plus the spread's share of the time left, spread narrowing with sqrt(time left).
+   Pregame is eg=0 with a 0-0 score, so the same function covers both and there is
+   no jump at kickoff. */
+function mgDist(g,eg){
+  const rem=Math.max(0,3600-eg)/3600;
+  const side=g.line&&g.line.side,sgn=side==="home"?1:side==="away"?-1:0;
+  const hasS=g.spread!=null&&(sgn!==0||g.spread===0);
+  const cur=g.state==="pre"?0:(g.hs!=null&&g.as!=null?g.hs-g.as:(g.margin||0));
+  const mu=cur+(hasS?sgn*g.spread*rem:0);
+  const sig=(hasS?MG_SIG_SPREAD:MG_NS[clsOf(g)])*Math.sqrt(rem);
+  return{mu,sig};
+}
+/* remaining game-time cost from eg to T: CFB averages over the margin belief, NFL
+   keeps its fitted current-margin rule */
+function remEff(g,eg,T){
+  if(g.sport!=="cfb")return effSec(g.sport,eg,T,g.margin);
+  const d=mgDist(g,eg);return effAvg("cfb",eg,T,d.mu,d.sig);
+}
 /* `target` is a point on the game clock, in elapsed game-seconds. 3600 is the end
    of regulation, which is what every existing caller wants. Passing 3300 asks the
    same question about the moment a game reaches 5:00 of the fourth — the start of
@@ -2146,7 +2291,24 @@ function effSec(sp,a,b,mg){const qf=QF[sp];let s=0,c=a;while(c<b){const q=Math.m
    breaks. */
 const TVF={broadcast:190/180,cw:190/180,espn:185/180,cable:185/180,stream:1.0,stream2:1.0,
   local:190/180,other:1.0};
+/* CFB: the model's class pace. J's own game length for a class (Settings) maps
+   listed→final minutes L to a factor through the same margin-averaged model the
+   pregame number uses, so typing 3:25 makes a typical no-spread game of that class
+   come out at exactly 3:25. Yours, when set, wins outright for that class; learning
+   keeps recording against the model's number either way, so its column stays
+   comparable and takes over again the moment yours is cleared. */
+const CFB_A={};
+function cfbA(c){   // playing-minutes per unit pace for a typical no-spread game of class c
+  if(CFB_A[c]==null){const P=SPORT.cfb;CFB_A[c]=effAvg("cfb",0,3600,0,MG_NS[c])*(P.reg-P.half)/3600;}
+  return CFB_A[c];
+}
+const cfbModelLen=c=>CFB_LAG[c]+SPORT.cfb.half+cfbA(c)*CFB_TF[c];
+function userTf(c){
+  const L=+TIERS[c];if(!(L>0))return null;
+  const tf=(L-CFB_LAG[c]-SPORT.cfb.half)/cfbA(c);return tf>.6&&tf<1.6?tf:null;
+}
 function tvFactor(g){
+  if(g&&g.sport==="cfb")return CFB_TF[clsOf(g)];
   const cs=g&&g.chans;if(!cs||!cs.length)return 1;
   let f=1;for(const n of cs){const v=TVF[tierOf(n)];if(v!==undefined&&v>f)f=v;}
   return f;
@@ -2170,23 +2332,25 @@ function atHalftime(g){
 function project(g,now,target){
   const T=target||3600,P=SPORT[g.sport];
   /* finals-learned pace for the finish, 5:00-learned pace for the 5:00 point */
-  const tf=tvFactor(g)*(T<3600?cal5Of(g.sport,g.tier):calOf(g.sport,g.tier));
+  const cl=clsOf(g),yours=g.sport==="cfb"?userTf(cl):null;
+  const tf=yours!=null?yours:tvFactor(g)*(T<3600?cal5Of(g.sport,cl):calOf(g.sport,cl));
   const pp=(P.reg-P.half)/3600*tf;
   if(g.state==="post")return null;
   /* Pregame: one formula for every sport and every target, so the final and the
      5:00 point always come from the same model. */
-  if(g.state==="pre")return{end:g.kick+P.half+effSec(g.sport,0,T,g.margin)*pp,conf:"sched",delay:0};
+  const K=g.kick0!=null?g.kick0:g.kick;   // model clock starts at the real (or expected) kickoff
+  if(g.state==="pre")return{end:K+P.half+remEff(g,0,T)*pp,conf:"sched",delay:0};
   const eg=g.period>4?3600:Math.min(3599,(g.period-1)*900+(900-g.clockSec));
   if(eg>=T&&!atHalftime(g))return{end:now,conf:"live",delay:0};   // already past it
   /* period-based, so 1800 elapsed is never ambiguous */
   const halfDone=g.period>=3, hs=halfDone?P.half:0, halfAhead=halfDone?0:P.half;
-  if(g.delayed){const r=effSec(g.sport,eg,T,g.margin)*pp+halfAhead;
+  if(g.delayed){const r=remEff(g,eg,T)*pp+halfAhead;
     return{end:now+r+30,conf:"delay",delay:0};}
   if(g.period>4)return{end:now+P.ot*.6,conf:"ot",delay:0};
-  const egE=effSec(g.sport,0,eg,g.margin),real=now-g.kick,prior=egE*pp+hs;
+  const egE=effSec(g.sport,0,eg,g.margin),real=now-K,prior=egE*pp+hs;
   if(real<2||real>420){
-    const rem=effSec(g.sport,eg,T,g.margin)*pp+halfAhead;
-    return{end:g.kick+prior+rem,conf:"sched",delay:0};}
+    const rem=remEff(g,eg,T)*pp+halfAhead;
+    return{end:K+prior+rem,conf:"sched",delay:0};}
 
   if(atHalftime(g)){
     /* Cap what the first half is allowed to have cost at its SCHEDULED length.
@@ -2204,7 +2368,7 @@ function project(g,now,target){
     const w=Math.min(.85,eg/1200);
     let pace=w*(firstReal/egE)+(1-w)*pp;
     pace=Math.max(.80*pp,Math.min(pp,pace));
-    return{end:now+remHalf+effSec(g.sport,eg,T,g.margin)*pace,conf:"half",
+    return{end:now+remHalf+remEff(g,eg,T)*pace,conf:"half",
       delay:Math.round(elapsedHalf)};
   }
 
@@ -2220,12 +2384,14 @@ function project(g,now,target){
   const w=Math.min(.85,eg/1200);let pace=pp;
   if(eg>150)pace=w*((real-hs-off)/egE)+(1-w)*pp;
   pace=Math.max(.80*pp,Math.min(pp*(1+.40*w+.05),pace));
-  let end=now+effSec(g.sport,eg,T,g.margin)*pace+halfAhead;
+  let end=now+remEff(g,eg,T)*pace+halfAhead;
   if(T>=3600&&3600-eg<180&&g.margin===0)end+=P.ot*P.otP;
   return{end,conf:eg>1200?"live":"early",delay:Math.round(off)};
 }
 
 window.__FC.project=project;window.__FC.effSec=effSec;window.__FC.SPORT=SPORT;
+window.__FC.tvFactor=tvFactor;window.__FC.cfbModelLen=cfbModelLen;window.__FC.CFB_LAG=CFB_LAG;
+window.__FC.setTierLen=(c,v)=>{if(v==null)delete TIERS[c];else TIERS[c]=v;};   // test hook: in-memory only
 window.__FC.normalize=(raw,ds,now)=>normalize(raw,ds,now);window.__FC.onLinear=onLinear;
 
 /* ---------------- next crunch, for the header ----------------
@@ -2395,7 +2561,14 @@ function normalize(raw,dayStart,now){
     const home=k.home||{},away=k.away||{};
     const hs=home.score==null?0:home.score,as=away.score==null?0:away.score;
     const chans=channels(c),lk=linksOf(e);
-    const g={id:e.id,sport,group,kick,state,period:k.period||0,
+    /* kick: the listed time, for drawing. kick0: when the ball was (or will
+       probably be) kicked, for the pace model — measured if the direct lane has
+       it, otherwise the listing plus the typical lag. NFL's fit was made against
+       listed times, so its lag is already inside its baseline. */
+    const kms=HUB.kickOf?HUB.kickOf(e.id):null;
+    const cls=clsOf({chans,tier:tierOf(chans[0])});
+    const kick0=kms!=null?(kms-dayStart)/6e4:kick+(sport==="nfl"?0:CFB_LAG[cls]);
+    const g={id:e.id,sport,group,cls,kick,kick0,kickReal:kms!=null,state,period:k.period||0,
       clockSec:k.secs==null?900:k.secs,                 // timeline has always read a missing clock as a full quarter
       delayed:/DELAY|SUSPEND/.test(nm),detail:k.detail,
       home,away,hs,as,
@@ -2412,7 +2585,7 @@ function normalize(raw,dayStart,now){
         if(pv&&pv.eg<CRUNCH_EG&&eg>=CRUNCH_EG&&now-pv.t<=4&&eg>pv.eg){
           CAL5_SEEN[g.id]=1;
           const tc=pv.t+(CRUNCH_EG-pv.eg)/(eg-pv.eg)*(now-pv.t);
-          cal5Record(g,tc-g.kick);
+          cal5Record(g,tc-(g.kick0!=null?g.kick0:g.kick));
         }
         CAL5_PREV[g.id]={t:now,eg};
       }
@@ -2450,7 +2623,7 @@ function normalize(raw,dayStart,now){
     else if(state==="post"&&!CAL_SEEN[g.id]){
       CAL_SEEN[g.id]=1;
       const lastLive=CAL_LIVE[g.id];
-      if(g.kick!=null&&lastLive!=null&&now-lastLive<=4)calRecord(g,lastLive-g.kick+Math.min(2,now-lastLive));
+      if(g.kick!=null&&lastLive!=null&&now-lastLive<=4)calRecord(g,lastLive-(g.kick0!=null?g.kick0:g.kick)+Math.min(2,now-lastLive));
     }
     games.push(g);
   }
@@ -3034,8 +3207,49 @@ function calStatus(){
     :"no samples yet";
 }
 setInterval(calStatus,4000);
+/* ---- CFB game length table (Settings) ---- */
+const hm=m=>{m=Math.round(m);return Math.floor(m/60)+":"+String(m%60).padStart(2,"0");};
+function parseLen(v){
+  v=String(v==null?"":v).trim();if(!v)return null;
+  let m=v.match(/^(\d):(\d{2})$/);if(m)return +m[1]*60+ +m[2];
+  if(/^\d+(\.\d+)?$/.test(v)){const n=+v;return n<10?Math.round(n*60):n;}  // "3.5" = 3h30
+  return NaN;
+}
+function tierRow(c){
+  const P=SPORT.cfb,model=cfbModelLen(c),k="cfb:"+c,n=(CAL[k]||[]).length,f=calOf("cfb",c);
+  const L=+TIERS[c]>0&&userTf(c)!=null?+TIERS[c]:null;
+  const use=L!=null?L:CFB_LAG[c]+P.half+(model-CFB_LAG[c]-P.half)*f;
+  return{model,n,f,L,use,learned:n<CAL_MIN?`${n}/${CAL_MIN}`:((f-1)*100>=0?"+":"")+((f-1)*100).toFixed(0)+"%"};
+}
+function renderTiers(){
+  const t=document.getElementById("tierTbl");if(!t)return;
+  if(!t.querySelector("tr")){
+    t.innerHTML="<tr><th></th><th>Meas.</th><th>Model</th><th>Yours</th><th>Learned</th><th>Using</th></tr>"+
+      CLASSES.map(c=>`<tr data-c="${c}"><td>${c}</td><td>${hm(CFB_MEAS[c])}</td><td class="mod"></td>`+
+        `<td><input type="text" inputmode="numeric" placeholder="—" data-c="${c}"></td><td class="lrn"></td><td class="use"></td></tr>`).join("");
+    t.querySelectorAll("input").forEach(inp=>{
+      const c=inp.dataset.c;inp.value=+TIERS[c]>0?hm(+TIERS[c]):"";
+      inp.onchange=function(){
+        const v=parseLen(inp.value);
+        if(v===null){delete TIERS[c];inp.classList.remove("bad");}
+        else if(!(v>=150&&v<=270)){inp.classList.add("bad");return;}
+        else{TIERS[c]=v;inp.value=hm(v);inp.classList.remove("bad");}
+        tiersSave();renderTiers();refresh(true);
+      };
+    });
+  }
+  for(const c of CLASSES){
+    const tr=t.querySelector(`tr[data-c="${c}"]`);if(!tr)continue;const r=tierRow(c);
+    tr.querySelector(".mod").textContent=hm(r.model);
+    tr.querySelector(".lrn").textContent=r.learned;
+    tr.querySelector(".lrn").title=`${r.n} finals watched · factor ${r.f.toFixed(3)}`;
+    tr.querySelector(".use").textContent=hm(r.use);
+  }
+}
+renderTiers();setInterval(renderTiers,4000);
+window.__FC.tierRow=tierRow;window.__FC.parseLen=parseLen;
 document.getElementById("calReset").onclick=function(){
-  CAL={};calSave();CAL5={};cal5Save();calStatus();refresh(true);
+  CAL={};calSave();CAL5={};cal5Save();calStatus();renderTiers();refresh(true);
 };
 setInterval(airStatus,2000);
 function syncCfgUI(){
@@ -4268,13 +4482,41 @@ HUB.start();
     ["core", "teamOf", "clockOf", "anyLinear", "teamSite", "isCrunch", "regRemaining", "bankLine", "directStatus"]
       .forEach(function (k) { check("wiring", "HUB." + k, H && typeof H[k] === "function"); });
 
+    /* a missing hook must FAIL the checks that need it, not crash the whole run */
+    var tvF = function (g) { return F.tvFactor ? F.tvFactor(g) : NaN; };
     /* --- 2. calibration: the fitted numbers, with learning switched off --- */
     if (F.project && F.noCal) F.noCal(function () {
       var pre = function (sp, ch) { return { sport: sp, state: "pre", period: 0, clockSec: 0, margin: 0, kick: 0, chans: [ch] }; };
-      [["cfb", "CBS", 210], ["cfb", "ESPN", 205], ["cfb", "ESPN+", 200], ["nfl", "NBC", 186]].forEach(function (c) {
-        var e = F.project(pre(c[0], c[1]), 0, 3600).end;
-        check("calibration", c[0].toUpperCase() + " " + c[1] + " final " + fmt(c[2]), Math.abs(e - c[2]) <= 1, "got " + fmt(e));
+      /* CFB, kick→final for a no-spread game, against the 61-game measured medians
+         (Sep 26 + Oct 3 2026): linear 207.0, cable 198.2, stream 192.1. ±5: the
+         model averages over margins, the medians are of one sample. */
+      [["cfb", "CBS", 207.0], ["cfb", "ESPN", 198.2], ["cfb", "ESPN+", 192.1], ["nfl", "NBC", 186]].forEach(function (c) {
+        var e = F.project(pre(c[0], c[1]), 0, 3600).end, tol = c[0] === "nfl" ? 1 : 5;
+        check("calibration", c[0].toUpperCase() + " " + c[1] + " kick→final ≈ " + fmt(c[2]) + " measured", Math.abs(e - c[2]) <= tol, "got " + fmt(e));
       });
+      if (F.clsOf) [["ABC", "linear"], ["CW", "linear"], ["ESPN", "cable"], ["SECN", "cable"], ["ESPN+", "stream"], ["Peacock", "stream"]]
+        .forEach(function (c) { check("calibration", c[0] + " is " + c[1], F.clsOf({ chans: [c[0]] }) === c[1], "got " + F.clsOf({ chans: [c[0]] })); });
+      if (F.clsOf) check("calibration", "ESPN+ with ABC runs at linear pace", F.clsOf({ chans: ["ESPN+", "ABC"] }) === "linear");
+      /* the spread moves a pregame CFB estimate: a 28-point favourite plays a shorter game */
+      var sp = function (pts) { var g = pre("cfb", "ESPN"); g.spread = pts; g.line = { side: "home" }; return F.project(g, 0, 3600).end; };
+      check("calibration", "CFB 28-pt spread finishes earlier than 3-pt", sp(28) < sp(3) - 4, fmt(sp(28)) + " vs " + fmt(sp(3)));
+      /* your own length per class: typed 3:35 for linear → a no-spread linear game is 3:35 listed→final */
+      if (F.setTierLen) {
+        var lin = { sport: "cfb", state: "pre", period: 0, clockSec: 0, margin: 0, kick: 0, kick0: F.CFB_LAG.linear, chans: ["CBS"] };
+        var before = F.project(lin, 0, 3600).end;
+        F.setTierLen("linear", 215);
+        var mine = F.project(lin, 0, 3600).end, other = F.project(pre("cfb", "ESPN"), 0, 3600).end;
+        F.setTierLen("linear", null);
+        check("settings", "linear set to 3:35 → linear game 3:35", Math.abs(mine - 215) < .5, "got " + fmt(mine));
+        check("settings", "clearing it returns the model number", Math.abs(F.project(lin, 0, 3600).end - before) < .01);
+        check("settings", "model number shown = what a game gets", Math.abs(F.cfbModelLen("linear") - before) < .01, fmt(F.cfbModelLen("linear")) + " vs " + fmt(before));
+        check("settings", "parse 3:25 / 205 / 3.5", F.parseLen("3:25") === 205 && F.parseLen("205") === 205 && F.parseLen("3.5") === 210 && F.parseLen("") === null);
+      }
+      if (F.calMigrate) {
+        var mg = F.calMigrate({ "cfb:espn": [1.1, 1.1], "cfb:stream": [.9], "nfl:broadcast": [.9], "nfl:espn": [1.0] });
+        check("learning", "pre-refit CFB samples dropped (incl. old 'stream' key), NFL moved to its class",
+          !mg["cfb:espn"] && !mg["cfb:stream"] && mg["nfl:linear"] && mg["nfl:linear"][0] === .9 && mg["nfl:cable"] && mg["nfl:cable"][0] === 1, JSON.stringify(mg));
+      }
       var c5 = F.project(pre("nfl", "NBC"), 0, 3300).end;
       check("calibration", "NFL SNF 5:00 ~2:40 after kick (obs 2:37)", Math.abs(c5 - 160) <= 2, "got " + fmt(c5));
       ["cfb", "nfl"].forEach(function (sp) {
@@ -4290,11 +4532,13 @@ HUB.start();
          minute per real minute (the break still to come gets used up), and while
          halftime has time left it must hold at the pregame number. Before the
          schedule it may only climb back UP TO the pregame number, never past it. */
-      [["nfl", "NBC", 190 / 180, 3], ["cfb", "CBS", 190 / 180, 10], ["cfb", "ESPN+", 1, 21]].forEach(function (c) {
-        var sp = c[0], P = F.SPORT[sp], pp = (P.reg - P.half) / 3600 * c[2];
-        var first = F.effSec(sp, 0, 1800, c[3]) * pp;
-        var g = { sport: sp, state: "in", period: 2, clockSec: 0, margin: c[3], kick: 0, delayed: false, detail: "Halftime", chans: [c[1]] };
-        var pregame = F.project({ sport: sp, state: "pre", period: 0, clockSec: 0, margin: c[3], kick: 0, chans: [c[1]] }, 0, 3600).end;
+      [["nfl", "NBC", 3], ["cfb", "CBS", 10], ["cfb", "ESPN+", 21]].forEach(function (c) {
+        var sp = c[0], P = F.SPORT[sp], pp = (P.reg - P.half) / 3600 * tvF({ sport: sp, chans: [c[1]] });
+        var first = F.effSec(sp, 0, 1800, c[2]) * pp;
+        var g = { sport: sp, state: "in", period: 2, clockSec: 0, margin: c[2], kick: 0, delayed: false, detail: "Halftime", chans: [c[1]] };
+        /* baseline: the same game read through the ordinary live path, exactly on
+           schedule at the end of the half — the number halftime must hold to */
+        var pregame = F.project({ sport: sp, state: "in", period: 2, clockSec: 0, margin: c[2], kick: 0, delayed: false, detail: "", chans: [c[1]] }, first, 3600).end;
         var after = 0, over = 0, prev = null;
         for (var r = first - 10; r <= first + 40; r += 1) {
           var e = F.project(g, r, 3600).end;
@@ -4312,12 +4556,18 @@ HUB.start();
       });
 
       /* --- 4. a game on schedule projects the same final live as pregame --- */
-      var P = F.SPORT.cfb, tf = 185 / 180, pp = (P.reg - P.half) / 3600 * tf;
-      var real = P.half + F.effSec("cfb", 0, 2700, 7) * pp;
-      var live = { sport: "cfb", state: "in", period: 4, clockSec: 900, margin: 7, kick: 0, delayed: false, detail: "", chans: ["ESPN"] };
-      var pg = { sport: "cfb", state: "pre", period: 0, clockSec: 0, margin: 7, kick: 0, chans: ["ESPN"] };
-      var a = F.project(live, real, 3600).end, b = F.project(pg, 0, 3600).end;
-      check("consistency", "on-schedule live game = pregame final", Math.abs(a - b) < 1, fmt(a) + " vs " + fmt(b));
+      /* CFB: 0-0 a few minutes in, on schedule, same spread → same final as pregame
+         (the margin belief is one function of time, so there is no jump at kickoff) */
+      [["cfb", "ESPN", 0, 0], ["cfb", "CBS", 14, 1], ["nfl", "NBC", 7, 4]].forEach(function (c) {
+        var sp = c[0], P = F.SPORT[sp], pp = (P.reg - P.half) / 3600 * tvF({ sport: sp, chans: [c[1]] });
+        var per = c[3] || 1, eg = sp === "nfl" ? 2700 : 300, real = (eg >= 1800 ? P.half : 0) + F.effSec(sp, 0, eg, c[2]) * pp;
+        var ln = c[2] ? { side: "home" } : null;
+        var live = { sport: sp, state: "in", period: sp === "nfl" ? 4 : 1, clockSec: sp === "nfl" ? 900 : 600, margin: sp === "nfl" ? c[2] : 0, hs: 0, as: 0,
+          kick: 0, delayed: false, detail: "", chans: [c[1]], spread: c[2] || null, line: ln };
+        var pg = { sport: sp, state: "pre", period: 0, clockSec: 0, margin: sp === "nfl" ? c[2] : 0, kick: 0, chans: [c[1]], spread: c[2] || null, line: ln };
+        var a = F.project(live, real, 3600).end, b = F.project(pg, 0, 3600).end;
+        check("consistency", sp + " " + c[1] + (c[2] ? " spread " + c[2] : "") + ": on-schedule live = pregame final", Math.abs(a - b) < 1, fmt(a) + " vs " + fmt(b));
+      });
     });
 
     /* --- 5. one parser: both pages read the same event the same way --- */
@@ -4435,11 +4685,15 @@ HUB.start();
         return F.sandboxCal(function () {
           var T = which === "5:00" ? 3300 : 3600;
           var pg = { sport: "cfb", state: "pre", period: 0, clockSec: 0, margin: 0, kick: 0, chans: ["ESPN"], tier: "espn" };
-          var prior = F.project(pg, 0, T).end, obs = prior * 0.94;
+          /* samples are recorded at each game's actual final margin (0 here) against
+             the model's margin-0 number; four of them at 94% must scale the playing
+             time of every later estimate to 94% */
+          var P = F.SPORT.cfb, prior = F.project(pg, 0, T).end;
+          var pred0 = P.half + F.effSec("cfb", 0, T, 0) * (P.reg - P.half) / 3600 * tvF(pg), obs = P.half + (pred0 - P.half) * 0.94;
           var rec = which === "5:00" ? F.cal5Record : F.calRecord;
           for (var i = 0; i < 4; i++) rec({ sport: "cfb", tier: "espn", chans: ["ESPN"], margin: 0 }, obs);
-          var learned = F.project(pg, 0, T).end, err = learned - obs;
-          return { ok: Math.abs(err) < 0.1, detail: "observed " + fmt(obs) + ", model now " + fmt(learned) };
+          var learned = F.project(pg, 0, T).end, r = (learned - P.half) / (prior - P.half);
+          return { ok: Math.abs(r - 0.94) < 0.002, detail: "playing-time ratio " + r.toFixed(3) + " (want 0.940)" };
         });
       });
     });
@@ -4535,6 +4789,33 @@ HUB.start();
         try { F.renderGuide(); } catch (e) {}
       }
     });
+
+    /* --- 13. kickoff: the model's clock starts when the ball is kicked --- */
+    {
+      tryCheck("kickoff", "parses ESPN's real first-plays shape", function () {
+        if (!H || !H._kick) return { ok: false, detail: "kickoff reader missing" };
+        var it = function (per, wall, ty) { return { period: { number: per }, wallclock: wall, type: { text: ty } }; };
+        var t = H._kick.kickFromPlays({ items: [it(1, null, "Coin Toss"), it(1, "2026-09-26T00:08:19Z", "Timeout"),
+          it(1, "2026-09-26T00:06:06Z", "Kickoff")] });
+        return { ok: t === Date.parse("2026-09-26T00:06:06Z"), detail: t ? new Date(t).toISOString() : "null" };
+      });
+      if (F.project && F.noCal) F.noCal(function () {
+        tryCheck("kickoff", "a late kick no longer reads as slow football", function () {
+          /* same game, same football, kicked 15 min late: every projection must be
+             exactly 15 min later — the lag shifts the clock, it never reads as pace */
+          var P = F.SPORT.cfb, pp = (P.reg - P.half) / 3600 * tvF({ sport: "cfb", chans: ["ABC"] }), LAG = 15, worst = 0;
+          [[1, 0], [2, 450], [3, 450], [4, 600]].forEach(function (q) {
+            var eg = (q[0] - 1) * 900 + (900 - q[1]);
+            var real = F.effSec("cfb", 0, eg, 7) * pp + (q[0] >= 3 ? P.half : 0);
+            var mk = function (k0) { return { sport: "cfb", state: "in", period: q[0], clockSec: q[1], margin: 7, hs: 7, as: 0, kick: 0, kick0: k0,
+              delayed: false, detail: "", chans: ["ABC"] }; };
+            var late = F.project(mk(LAG), real + LAG, 3300).end, onTime = F.project(mk(0), real, 3300).end;
+            worst = Math.max(worst, Math.abs(late - onTime - LAG));
+          });
+          return { ok: worst < 0.5, detail: "worst error " + worst.toFixed(1) + " min (was +27 at end of Q1)" };
+        });
+      });
+    }
 
     /* ------------------------------ report ------------------------------ */
     var pass = out.filter(function (r) { return r.ok; }).length;
