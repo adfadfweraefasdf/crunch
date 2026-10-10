@@ -436,6 +436,10 @@ footer#notes b{color:#8496ac;font-weight:600}
 #guideView .g{position:absolute;height:22px;border-radius:3px;background:var(--panel2);border:1px solid var(--line2);overflow:hidden;cursor:pointer;display:flex;align-items:center;padding:0 5px;gap:5px;white-space:nowrap;font-size:11px}
 #guideView .g:hover{border-color:#5c718e;z-index:12}
 #guideView .g .tail{position:absolute;top:0;bottom:0;pointer-events:none}
+#guideView .gx{position:absolute;height:22px;pointer-events:none;border-radius:0 3px 3px 0;
+  background:repeating-linear-gradient(135deg,rgba(255,210,63,.20) 0 2px,transparent 2px 5px)}
+#guideView .gx b{position:absolute;left:4px;top:0;line-height:22px;font-size:10px;font-weight:600;
+  color:var(--crunch);white-space:nowrap;font-variant-numeric:tabular-nums}
 #guideView .g .e50{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,210,63,.75);pointer-events:none}
 #guideView .g .tm{font-weight:600;position:relative;flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 #guideView .g .ln{color:var(--dim);font-weight:400}
@@ -456,6 +460,28 @@ footer#notes b{color:#8496ac;font-weight:600}
 #stepAway .pane{max-width:1140px;margin:8px auto 0;padding:9px 12px;background:var(--panel2);
   border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:12px}
 #stepAway .pane h2{margin:0 0 7px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);font-weight:400}
+#stepAway .fb{margin:0 0 9px}
+#stepAway .fbbar{position:relative;height:8px;border-radius:4px;background:rgba(95,208,138,.22);margin:0 0 7px;overflow:hidden}
+#stepAway .fbbar span{position:absolute;top:0;bottom:0;background:var(--hot);min-width:2px}
+#stepAway .fbbar s{position:absolute;top:0;bottom:0;right:0;background:var(--panel2);
+  border-left:1px solid var(--dimmer);opacity:.85}
+#stepAway .fr{display:grid;grid-template-columns:128px 62px 1fr;gap:10px;align-items:baseline;
+  padding:3px 8px;border-left:3px solid var(--line);white-space:nowrap}
+#stepAway .fr b{font-size:13px;font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums}
+#stepAway .fr i{font-style:normal;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums}
+#stepAway .fr u{text-decoration:none;color:var(--dim);overflow:hidden;text-overflow:ellipsis;min-width:0}
+#stepAway .fr em{font-style:normal;color:var(--txt)}
+#stepAway .fr.free{border-left-color:var(--live)}
+#stepAway .fr.free u{color:var(--live);text-transform:uppercase;letter-spacing:.12em;font-size:10.5px}
+#stepAway .fr .ms{text-transform:none;letter-spacing:0;color:var(--dim)}
+#stepAway .fr .k{color:var(--hot)} #stepAway .fr .k2{color:var(--live)} #stepAway .fr .k3{color:var(--web)}
+#stepAway .fr.busy{border-left-color:var(--hot);background:var(--hotbg)}
+#stepAway .fr.busy b{color:var(--hot)}
+#stepAway .fr.done{border-left-color:var(--dimmer);margin-top:3px}
+#stepAway .fr .ota{color:var(--hot)} #stepAway .fr .cable{color:var(--live)}
+#stepAway .fr .stream{color:var(--web)} #stepAway .fr .other{color:var(--dimmer)}
+@media (max-width:820px){#stepAway .fr{grid-template-columns:104px 52px 1fr;gap:6px;padding:3px 6px}
+  #stepAway .fr b{font-size:12px}}
 #stepAway .win{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 @media (max-width:820px){#stepAway .win{grid-template-columns:repeat(auto-fit,minmax(122px,1fr))}}
 #stepAway .win div{border:1px solid var(--line);border-radius:3px;padding:6px 8px;background:var(--panel2)}
@@ -2420,6 +2446,7 @@ function crunchETA(g,now){
      told about — you are not driving anywhere for it — so linear games stay in
      regardless of score, and only the clock is being projected either way. */
   if(g.margin>HUB.CRUNCH_MARGIN&&!onLinear(g))return null;
+  if(decided(g))return null;                            // inside 5:00, 17+ apart: not a crunch
   if(g.crunch)return now;
   if(g.period>4)return now;                             // overtime is crunch
   const p=project(g,now,CRUNCH_EG);
@@ -2449,6 +2476,61 @@ const q10=(m,s)=>m-1.1503*s, q90=(m,s)=>m+2.0745*s;
    numerically from endCDF (CDF(lo)=.0500, CDF(hi)=.9500 at every sigma). */
 const q05=(m,s)=>m-1.5341*s, q95=(m,s)=>m+2.5975*s;
 
+/* When a game actually ended. A final has no projection, so the timeline used to
+   draw every finished game out to kickoff + a flat constant — a game that ended at
+   11:38 sat on the grid as "over at 12:00". The finish is recorded the moment this
+   page sees live turn into final and kept for the day (fb.fin, absolute ms). A game
+   that was already final when the page opened gets the model length, never past now,
+   and is flagged as an estimate. */
+let FIN={};
+try{const o=JSON.parse(localStorage.getItem("fb.fin")||"{}"),cut=Date.now()-36*36e5;
+  for(const k in o)if(o[k]>cut)FIN[k]=o[k];}catch(e){FIN={};}
+const saveFin=()=>{try{localStorage.setItem("fb.fin",JSON.stringify(FIN));}catch(e){}};
+/* The ONE definition of where a game's span stops, for every drawing on the page:
+   spanEnd = projected final (or the real one), spanHi = its 95th percentile. */
+const spanEnd=g=>g.state==="post"?g.fin:g.end;
+const spanHi=g=>g.state==="post"?g.fin:(g.end==null?null:q95(g.end,sigOf(g)));
+/* Inside the last 5:00 and more than two scores apart: the crunch rule has already
+   said no, so this game no longer asks for you. (Within 16 it stays in — a change of
+   possession can put it back in crunch.) */
+function decided(g){
+  if(g.state!=="in"||g.period>4||g.crunch)return false;
+  return (g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG&&g.margin>HUB.CRUNCH_MARGIN;
+}
+/* Does this game's ending put you in front of a screen? Live: the pill's rule
+   (inside 16, or on a channel you can flip to). Not kicked: channels you can flip to. */
+function wanted(g){
+  if(g.state==="post"||g.c5==null||g.end==null)return false;
+  if(g.state==="pre")return onLinear(g);
+  if(decided(g))return false;
+  return g.margin<=HUB.CRUNCH_MARGIN||onLinear(g);
+}
+/* Free / busy from `from` onward. A game holds you from its 5:00 mark to its final;
+   overlapping or nearly-touching holds (under FB_GAP minutes apart) are one block.
+   `also` is the pill's own game, so the first block always starts where the pill says. */
+const FB_GAP=10;
+function freeBusy(G,from,also){
+  const add={};(also||[]).forEach(x=>{if(x)add[x.id]=1;});
+  const iv=[];
+  for(const g of G){
+    if(g.state==="post"||g.c5==null||g.end==null)continue;
+    if(!wanted(g)&&!(add[g.id]&&!decided(g)))continue;
+    const a=from==null?g.c5:Math.max(from,g.c5),b=Math.max(a+1,g.end);
+    iv.push({a,b,hi:Math.max(b,q95(g.end,sigOf(g))),g});
+  }
+  iv.sort((x,y)=>x.a-y.a);
+  const busy=[];
+  for(const v of iv){
+    const L=busy[busy.length-1];
+    if(L&&v.a-L.b<FB_GAP){L.b=Math.max(L.b,v.b);L.hi=Math.max(L.hi,v.hi);L.games.push(v.g);}
+    else busy.push({a:v.a,b:v.b,hi:v.hi,games:[v.g]});
+  }
+  const L=busy[busy.length-1];
+  return{busy,done:L?L.b:null,doneHi:L?L.hi:null};
+}
+window.__FC.freeBusy=freeBusy;window.__FC.spanEnd=spanEnd;window.__FC.spanHi=spanHi;
+window.__FC.setEst=g=>setEst(g);window.__FC.hhmm12=m=>hhmm12(m);window.__FC.q05=q05;window.__FC.q95=q95;window.__FC.sigOf=sigOf;window.__FC.decided=decided;
+
 /* Per-game crunch estimate for the live board: when the clock should read 5:00 of
    the fourth, with a 90% interval. Built from TODAY's slate only — the board always
    shows today — and refreshed before the board renders, because the timeline's
@@ -2460,18 +2542,22 @@ function setEst(games){
     if(g.state==="post")continue;
     const s=sigOf(g);
     m[g.id]={now:!!(g.crunch||(g.state==="in"&&g.period>4)),ot:g.state==="in"&&g.period>4,
-      c5:g.c5,lo:g.c5==null?null:q05(g.c5,s),hi:g.c5==null?null:q95(g.c5,s),conf:g.conf};
+      c5:g.c5,lo:g.c5==null?null:q05(g.c5,s),hi:g.c5==null?null:q95(g.c5,s),conf:g.conf,
+      end:g.end,endHi:g.end==null?null:q95(g.end,s)};
   }
   EST=m;
 }
 HUB.crunchEst=function(id){
   const e=EST[id];if(!e)return null;
-  if(e.now)return{txt:e.ot?"OT":"crunch now",title:"In crunch now"};
+  /* Both numbers, labelled: 5:00 is when to be back, end is when you are free. */
+  const fin=e.end==null?"":" · end ≈"+hhmm12(e.end);
+  const finT=e.end==null?"":" Projected final: "+hhmm12(e.end)+" (95% by "+hhmm12(e.endHi)+").";
+  if(e.now)return{now:true,txt:(e.ot?"OT":"crunch now")+fin,title:"In crunch now."+finT};
   if(e.c5==null)return null;
   const a=hhmm12(e.lo),b=hhmm12(e.hi);
-  return{txt:"≈"+hhmm12(e.c5)+" · "+(a.slice(-1)===b.slice(-1)?a.slice(0,-1):a)+"–"+b,
-    title:"Projected crunch (5:00 left in Q4): "+hhmm12(e.c5)+". 90% interval "+a+"–"+b+
-      ". Basis: "+(e.conf||"schedule")+"."};
+  return{txt:"5:00 ≈"+hhmm12(e.c5)+" · "+(a.slice(-1)===b.slice(-1)?a.slice(0,-1):a)+"–"+b+fin,
+    title:"Clock reads 5:00 of Q4: "+hhmm12(e.c5)+". 90% interval "+a+"–"+b+"."+finT+
+      " Basis: "+(e.conf||"schedule")+"."};
 };
 
 /* ===================== game weight, 0.0 – 5.0 =================== */
@@ -2619,6 +2705,13 @@ function normalize(raw,dayStart,now){
        the first time it met ANY final, so opening the page at 7pm logged the noon
        games as seven-hour games; the ±12% clamp then pinned every tier at +12%.
        That is where "the 7:20 game won't hit crunch until 10:46" came from. */
+    if(state==="post"){
+      const ll=CAL_LIVE[g.id];
+      if(FIN[g.id]==null&&ll!=null&&now-ll<=4){FIN[g.id]=dayStart+(ll+Math.min(2,now-ll))*6e4;saveFin();}
+      if(FIN[g.id]!=null){g.fin=(FIN[g.id]-dayStart)/6e4;g.finEst=false;}
+      else{const pe=project(Object.assign({},g,{state:"pre"}),now);
+        g.fin=Math.max(g.kick+30,Math.min(now,pe?pe.end:g.kick+SPORT[g.sport].reg));g.finEst=true;}
+    }
     if(state==="in")CAL_LIVE[g.id]=now;
     else if(state==="post"&&!CAL_SEEN[g.id]){
       CAL_SEEN[g.id]=1;
@@ -2710,7 +2803,7 @@ function paintStepAway(){
     clearStepAway(lg.fbs||lg.fcs||lg.nfl?"No games on this date.":"Every league is switched off.");
     return;}
   G.forEach(g=>g.w=gameWeight(g));
-  const ends=G.map(g=>g.end==null?g.kick+SPORT[g.sport].reg:q90(g.end,sigOf(g)));
+  const ends=G.map(g=>{const h=spanHi(g);return h==null?g.kick+SPORT[g.sport].reg:h;});
   const kick0=Math.min(...G.map(g=>g.kick));
   const t0=kick0<CANON0?Math.floor(kick0/15)*15-15:CANON0;
   const t1=Math.max(CANON1,Math.ceil(Math.max(...ends)/15)*15+15);
@@ -2737,7 +2830,7 @@ function render(){
   /* the 11:00a-1:00a canvas is what gets fitted to the screen, and it is the SAME
      every day. Anything outside it (a London kick, a Hawai'i finish) is rendered at
      the same scale and simply extends off the edge, so no block ever moves. */
-  const ends=G.map(g=>g.end==null?g.kick+SPORT[g.sport].reg:q90(g.end,sigOf(g)));
+  const ends=G.map(g=>{const h=spanHi(g);return h==null?g.kick+SPORT[g.sport].reg:h;});
   const kick0=Math.min(...G.map(g=>g.kick));
   const t0=kick0<CANON0?Math.floor(kick0/15)*15-15:CANON0;
   const t1=Math.max(CANON1,Math.ceil(Math.max(...ends)/15)*15+15);
@@ -2810,17 +2903,27 @@ function render(){
   bindStage(H,G);
 }
 
+/* A block is the game: listed kickoff to projected final (a finished game: to
+   when it finished). Inside it, the yellow line is 5:00 left and the yellow zone
+   from there to the right edge is the part you are back for. The hatched stub past
+   the edge runs to the 95th percentile of the final, with the projected final
+   printed on it. These are the same g.c5 and g.end the row, the table, the popup
+   and the free/busy list print — the block used to stop at the 90th percentile of
+   the 5:00 time, which was none of them. */
 function laneRow(nm,tier,list,t0,W,VL){
   const sorted=list.slice().sort((a,b)=>a.kick-b.kick),sub=[];
-  for(const g of sorted){const e=g.end==null?g.kick+SPORT[g.sport].reg:g.end;
+  const endOf=g=>{const e=spanEnd(g);return e==null?g.kick+SPORT[g.sport].reg:e;};
+  const hiOf=g=>{const h=spanHi(g);return h==null?endOf(g):h;};
+  for(const g of sorted){
+    /* room for the block, its stub and the time printed on it */
+    const e=g.state==="post"?endOf(g):Math.max(hiOf(g),endOf(g)+46/ST.ppm);
     let r=sub.findIndex(row=>row.last<=g.kick+1);
     if(r<0){r=sub.length;sub.push({last:-1e9,items:[]});}
     sub[r].last=e;sub[r].items.push(g);}
   const h=Math.max(1,sub.length)*26,cls0=CLASS[tier];
   let bars="";
   sub.forEach((row,ri)=>row.items.forEach(g=>{
-    const s1=sigOf(g),lo=g.c5==null?null:q10(g.c5,s1)-S.crunch,hi=g.c5==null?null:q90(g.c5,s1);
-    const e=g.end==null?g.kick+SPORT[g.sport].reg:hi;
+    const s1=sigOf(g),e=endOf(g),hi=hiOf(g),open=g.state!=="post";
     const left=px(g.kick-t0),w=Math.max(px(e-g.kick),30);
     const sim=g.chans.indexOf(nm)>0;
     const cls=[cls0,g.state==="in"?"live":"",g.state==="post"?"final":"",sim?"sim":"",
@@ -2828,17 +2931,20 @@ function laneRow(nm,tier,list,t0,W,VL){
     const wide=w>=200;
     const play=g.watch?`<a class="pl" href="${esc(g.watch)}" target="_blank" rel="noopener" title="Direct watch link from the feed">▶</a>`:"";
     const sc=g.state==="pre"?"":`<span class="sc">${g.as}-${g.hs}${g.state==="in"?" · "+esc(g.detail):" F"}</span>`;
-    let tail="";
-    if(g.state!=="post"&&lo!=null){
-      const a=Math.max(g.kick+20,lo),span=Math.max(hi-a,6),pc=x=>Math.max(0,Math.min(100,(x-a)/span*100));
-      tail=`<div class="tail" style="left:${px(a-g.kick)}px;width:${px(span)}px;background:linear-gradient(90deg,`
-        +`rgba(255,210,63,0) 0%,rgba(255,210,63,.10) ${pc(q10(g.c5,s1)).toFixed(1)}%,`
-        +`rgba(255,210,63,.34) ${pc(g.c5).toFixed(1)}%,rgba(255,210,63,.03) 100%)"></div>`
+    let zone="",stub="",tip;
+    if(open&&g.c5!=null){
+      const a=Math.max(g.kick+20,q05(g.c5,s1)),span=Math.max(e-a,4),at=Math.max(0,Math.min(100,(g.c5-a)/span*100)).toFixed(1);
+      zone=`<div class="tail" style="left:${px(a-g.kick)}px;width:${px(span)}px;background:linear-gradient(90deg,`
+        +`rgba(255,210,63,0) 0%,rgba(255,210,63,.10) ${at}%,rgba(255,210,63,.30) ${at}%,rgba(255,210,63,.30) 100%)"></div>`
         +`<div class="e50" style="left:${px(g.c5-g.kick)}px"></div>`;
     }
-    bars+=`<div class="g ${cls}" data-id="${g.id}" style="left:${left}px;top:${ri*26+2}px;width:${w}px">
-      ${tail}
-      ${play}<span class="tm">${matchup(g,wide)}</span>${sc}</div>`;
+    if(open){
+      stub=`<div class="gx" style="left:${left+w}px;top:${ri*26+2}px;width:${Math.max(2,px(hi-e))}px"><b>${hhmm12(e)}</b></div>`;
+      tip=`5:00 left ≈ ${g.c5==null?"—":hhmm12(g.c5)} · final ≈ ${hhmm12(e)} · 95% by ${hhmm12(hi)}`;
+    }else tip=`Final${g.finEst?" · end time estimated":" · ended "+hhmm12(e)}`;
+    bars+=`<div class="g ${cls}" data-id="${g.id}" data-end="${e.toFixed(2)}" title="${tip}" style="left:${left}px;top:${ri*26+2}px;width:${w}px">
+      ${zone}
+      ${play}<span class="tm">${matchup(g,wide)}</span>${sc}</div>${stub}`;
   }));
   return `<div class="lane"><div class="lbl${list.length?"":" empty"}" style="min-height:${h}px">
     <div class="bar" style="background:var(--${cls0})"></div>${esc(nm)}</div>
@@ -2876,6 +2982,7 @@ function crunchNow(G){
    minus what leaving costs — an hour and a half that misses one stream beats
    twenty-five clear minutes, which is the judgement the old sum-of-heat ranking
    got backwards. */
+const SHOW_WINDOW_CARDS=false;
 const AWAY_COST={linear:25,cable:12,streaming:4};   // minutes of freedom each missed ending is worth giving up
 function windowsPane(H,G,t0,n){
   const nowM=(Date.now()-ST.dayStart)/6e4,today=todayLive();
@@ -2957,29 +3064,64 @@ function windowsPane(H,G,t0,n){
     i:`${w.mins} min`,
     j:w.clear?"clear":missTxt(w.m)}));
 
-  /* 5 — when the day is done */
-  let last=null;
-  for(const g of G){if(g.state==="post"||g.c5==null)continue;if(last==null||g.c5>last)last=g.c5;}
-  if(last!=null)cards.push({t:1e9,pri:2,b:hhmm12(last),
-    i:today?durTxt(last-nowM):"—",j:"last game hits 5:00"});
+  /* 5 — when the day is done: the last final, with the last 5:00 beside it */
+  let last=null,lastF=null;
+  for(const g of G){if(g.state==="post"||g.c5==null)continue;
+    if(last==null||g.c5>last)last=g.c5;
+    if(g.end!=null&&(lastF==null||g.end>lastF))lastF=g.end;}
+  if(lastF!=null)cards.push({t:1e9,pri:2,b:hhmm12(lastF),
+    i:today?durTxt(lastF-nowM):"—",j:"last final"});
 
   picked.sort((a,b)=>a.t-b.t);
   cards.sort((a,b)=>a.pri-b.pri||a.t-b.t);
-  return `<div class="pane"><h2>Your day</h2><div class="win">`+
+  /* The free/busy list is the day plan now. The cards said the same things from a
+     second derivation (15-minute heat buckets), so the two could name different
+     windows for the same gap; they stay computed above and are off by default. */
+  if(!SHOW_WINDOW_CARDS)return `<div class="pane"><h2>Your day</h2>`+freeBusyHTML(G,today?nowM:null,today)+`</div>`;
+  return `<div class="pane"><h2>Your day</h2>`+freeBusyHTML(G,today?nowM:null,today)+`<div class="win">`+
     cards.map(c=>`<div style="${c.clear?"border-color:#2f6b41":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
     `</div></div>`;
 }
 
-const COLS=[["end","Proj. 5:00"],["kick","Kick"],["game","Game"],["score","Score"],
+/* Free / busy, read top to bottom: the same c5 and end as every other surface. */
+function freeBusyHTML(G,from,today){
+  const cr=today&&typeof CR==="object"&&CR?CR:null;
+  const fb=freeBusy(G,from,cr&&cr.kind!=="none"?cr.games:null);
+  if(!fb.busy.length)return `<div class="fb"><div class="fr free"><b>Free</b><i>—</i><u>nothing left that needs you</u></div></div>`;
+  const nm=g=>`${esc(nameShort(g.away))}@${esc(nameShort(g.home))} <span class="${CLASS[g.tier]}">${esc(g.chans[0])}</span>`+
+    (g.state==="in"?` <em>${g.as}-${g.hs}</em>`:"");
+  const rows=[];let t=from;
+  const t0=from!=null?from:fb.busy[0].a,span=Math.max(1,fb.doneHi-t0),pc=x=>(Math.max(0,x-t0)/span*100).toFixed(2);
+  let bar="";
+  fb.busy.forEach((s,i)=>{
+    if(t!=null&&s.a-t>=1){
+      /* endings inside a free stretch are, by construction, games that do not hold you */
+      const m=missed(G,t,s.a),k=m.linear+m.cable+m.streaming;
+      rows.push(`<div class="fr free"><b>${i===0&&from!=null?"Now":hhmm12(t)}–${hhmm12(s.a)}</b><i>${durTxt(s.a-t)}</i><u>free${
+        k?` <span class="ms">· skips ${missTxt(m)}</span>`:""}</u></div>`);}
+    const gs=s.games.slice().sort((a,b)=>a.c5-b.c5);
+    rows.push(`<div class="fr busy"><b>${s.a-(from==null?-1e9:from)<1?"Now":hhmm12(s.a)}–${hhmm12(s.b)}</b><i>${durTxt(s.b-s.a)}</i><u>${
+      gs.slice(0,3).map(nm).join(" · ")}${gs.length>3?` · +${gs.length-3}`:""}</u></div>`);
+    bar+=`<span style="left:${pc(s.a)}%;width:${(Math.max(0,s.b-Math.max(t0,s.a))/span*100).toFixed(2)}%"></span>`;
+    t=s.b;
+  });
+  const MAXR=14,more=rows.length>MAXR?rows.length-MAXR:0;
+  const done=`<div class="fr done"><b>${hhmm12(fb.done)}</b><i>${from!=null?durTxt(fb.done-from):"—"}</i><u>done · 95% by ${hhmm12(fb.doneHi)}</u></div>`;
+  return `<div class="fb"><div class="fbbar" title="Now to done. Solid = a game inside its last 5:00.">${bar}<s style="left:${pc(fb.done)}%"></s></div>`+
+    rows.slice(0,MAXR).join("")+(more?`<div class="fr more"><b>…</b><i></i><u>${more} more before the end</u></div>`:"")+done+`</div>`;
+}
+const COLS=[["end","Proj. 5:00"],["fin","Proj. final"],["kick","Kick"],["game","Game"],["score","Score"],
   ["margin","Marg"],["chan","Channel"],["conf","Basis"]];
 function endingsPane(G){
   const live=G.filter(g=>g.state!=="post"),key=ST.sortKey,dir=ST.sortDir;
-  const val=g=>({end:g.c5,kick:g.kick,game:nameFull(g.away,g.sport),
+  const val=g=>({end:g.c5,fin:g.end,kick:g.kick,game:nameFull(g.away,g.sport),
     chan:PRIO[g.tier]*100+g.chans[0].charCodeAt(0),score:g.hs+g.as,margin:g.margin,conf:g.conf}[key]);
   live.sort((a,b)=>{const x=val(a),y=val(b);return(x>y?1:x<y?-1:0)*dir});
   const rows=live.map(g=>`<tr data-id="${g.id}">
     <td class="n">${g.c5==null?"—":hhmm12(g.c5)}${g.delay>5?` <span style="color:var(--live)">+${g.delay}</span>`:""}
-      ${g.c5==null?"":`<span style="color:var(--dim2)">${hhmm12(q10(g.c5,sigOf(g))).replace(/[ap]$/,"")}–${hhmm12(q90(g.c5,sigOf(g)))}</span>`}</td>
+      ${g.c5==null?"":`<span style="color:var(--dim2)">${hhmm12(q05(g.c5,sigOf(g))).replace(/[ap]$/,"")}–${hhmm12(q95(g.c5,sigOf(g)))}</span>`}</td>
+    <td class="n">${g.end==null?"—":hhmm12(g.end)}
+      ${g.end==null?"":`<span style="color:var(--dim2)">by ${hhmm12(q95(g.end,sigOf(g)))}</span>`}</td>
     <td class="n">${hhmm12(g.kick)}</td>
     <td>${matchup(g,true)}</td>
     <td class="n sc">${g.state==="pre"?(g.odds?esc(g.odds):"—"):g.as+"-"+g.hs}</td>
@@ -2988,7 +3130,7 @@ function endingsPane(G){
        g.watch?` <a href="${esc(g.watch)}" target="_blank" rel="noopener">▶</a>`:""}</td>
     <td style="color:var(--dim)">${g.state==="pre"?"schedule":g.conf==="delay"?"DELAYED":g.conf}</td></tr>`).join("");
   return `<div class="pane"><h2>Projected endings · ${live.length} games</h2><table><thead><tr>`+
-    COLS.map(([k,l])=>`<th class="${["end","kick","score","margin"].includes(k)?"n":""}" data-k="${k}">${l}${key===k?(dir>0?" ▲":" ▼"):""}</th>`).join("")+
+    COLS.map(([k,l])=>`<th class="${["end","fin","kick","score","margin"].includes(k)?"n":""}" data-k="${k}">${l}${key===k?(dir>0?" ▲":" ▼"):""}</th>`).join("")+
     `</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
@@ -2996,10 +3138,10 @@ function endingsPane(G){
 function bindStage(H,G){
   const byId=Object.fromEntries(G.map(g=>[g.id,g]));
   QA(".hc").forEach(el=>{
-    el.onmouseenter=ev=>{const i=+el.dataset.b,list=H.who[i].slice().sort((a,b)=>a.end-b.end);
+    el.onmouseenter=ev=>{const i=+el.dataset.b,list=H.who[i].slice().sort((a,b)=>a.c5-b.c5);
       const m=missed(G,ST.t0+i*15,ST.t0+i*15+15),t=$("#tip");
       t.innerHTML=`<b>${hhmm12(ST.t0+i*15)} · ${H.rating[i].toFixed(1)}</b> — ${missTxt(m)}<br>`+
-        (list.length?list.map(g=>`${hhmm12(g.end)} ${esc(nameShort(g.away))}@${esc(nameShort(g.home))} `+
+        (list.length?list.map(g=>`${hhmm12(g.c5)} ${esc(nameShort(g.away))}@${esc(nameShort(g.home))} `+
           `<span style="color:var(--dim)">${esc(g.chans[0])} ${g.w.toFixed(1)}</span>`).join("<br>")
          :"<span style='color:var(--dim)'>nothing in this window</span>");
       t.style.display="block";place(t,ev);};
@@ -3013,8 +3155,11 @@ function bindStage(H,G){
       <div class="r"><span>${g.state==="post"?"Final":"Status"}</span><b>${g.state==="pre"?"scheduled":esc(g.detail)}</b></div>
       ${g.state!=="pre"?`<div class="r"><span>Score</span><b>${g.as}–${g.hs} (marg ${g.margin})</b></div>`:""}
       ${g.odds?`<div class="r"><span>Line</span><b>${esc(g.odds)}</b></div>`:""}
-      <div class="r"><span>Projected end</span><b>${g.end==null?"final":hhmm12(g.end)}</b></div>
-      ${g.end==null?"":`<div class="r"><span>80% range</span><b>${hhmm12(q10(g.end,sigOf(g)))} – ${hhmm12(q90(g.end,sigOf(g)))}</b></div>`}
+      ${g.state==="post"?`<div class="r"><span>Ended</span><b>${g.fin==null?"final":(g.finEst?"≈":"")+hhmm12(g.fin)}</b></div>`:
+       `<div class="r"><span>5:00 left</span><b>${g.c5==null?"—":(g.crunch||g.period>4?"now":"≈"+hhmm12(g.c5))}</b></div>
+        ${g.c5==null||g.crunch||g.period>4?"":`<div class="r"><span>&nbsp; 90% range</span><b>${hhmm12(q05(g.c5,sigOf(g)))} – ${hhmm12(q95(g.c5,sigOf(g)))}</b></div>`}
+        <div class="r"><span>Final</span><b>${g.end==null?"—":"≈"+hhmm12(g.end)}</b></div>
+        ${g.end==null?"":`<div class="r"><span>&nbsp; 90% range</span><b>${hhmm12(q05(g.end,sigOf(g)))} – ${hhmm12(q95(g.end,sigOf(g)))}</b></div>`}`}
       <div class="r"><span>Basis</span><b>${g.state==="pre"?"schedule avg":g.conf}</b></div>
       ${g.delay>3?`<div class="r"><span>Banked delay</span><b style="color:var(--live)">${g.delay} min</b></div>`:""}
       <div class="r"><span>League</span><b>${g.sport==="nfl"?"NFL":"College (FBS)"}</b></div>
@@ -3942,7 +4087,7 @@ function gameCell(g, hot) {
 function estLine(g) {
   var e = HUB.crunchEst ? HUB.crunchEst(g.id) : null;
   if (!e) return '';
-  return '<i class="cest' + (e.title === 'In crunch now' ? ' now' : '') + '" title="' + esc(e.title) + '">' +
+  return '<i class="cest' + (e.now ? ' now' : '') + '" title="' + esc(e.title) + '">' +
     esc(e.txt) + '</i>';
 }
 function rowHTML(g, isNew, hot) {
@@ -4665,6 +4810,7 @@ HUB.start();
             var r = rs[j];
             if (r.cssRules && !r.selectorText) { walk(r.cssRules); continue; }
             var sel = r.selectorText || "", txt = r.cssText || "";
+            if (sel === ":root") (txt.match(/--[\w-]+(?=\s*:)/g) || []).forEach(function (v) { defs.board[v] = defs.guide[v] = 1; });
             var scope = /#boardView|#stepAway/.test(sel) ? "board" : /#guideView/.test(sel) ? "guide" : null;
             if (!scope) continue;
             if (sel === "#boardView" || sel === "#guideView")
@@ -4789,6 +4935,62 @@ HUB.start();
         try { F.renderGuide(); } catch (e) {}
       }
     });
+
+    /* --- 12b. one game = one 5:00 and one final, on every surface ---
+       The row said 12:24, the timeline block stopped at 12:40 (the 90th percentile of
+       the 5:00 time) and a finished game was drawn to a flat kickoff+190. These pin
+       the block, the stub, the row line and the free/busy list to g.c5 and g.end. */
+    if (F.freeBusy && F.renderGuide && F.ST && F.S && F.hhmm12 && F.setEst && H) {
+      var nowM = (Date.now() - F.ST.dayStart) / 6e4;
+      var mk = function (id, o) {
+        var g = { id: id, sport: "cfb", group: "fbs", kick: nowM - 170, state: "in", period: 3, clockSec: 400, detail: "6:40 - 3rd",
+          home: { abbreviation: "H" + id, location: "H" + id, shortDisplayName: "H" + id }, away: { abbreviation: "A" + id, location: "A" + id, shortDisplayName: "A" + id },
+          hs: 21, as: 24, margin: 3, chans: ["ESPN"], conf: "live", delay: 0, crunch: false };
+        for (var k in o) g[k] = o[k];
+        g.tier = H.tierOf(g.chans[0]); return g;
+      };
+      tryCheck("agree", "free/busy: a game holds you from its 5:00 to its final; near holds merge", function () {
+        var G = [mk("a", { c5: nowM + 30, end: nowM + 52 }), mk("b", { c5: nowM + 58, end: nowM + 80 }), mk("c", { c5: nowM + 200, end: nowM + 222 })];
+        var fb = F.freeBusy(G, nowM), b = fb.busy;
+        var ok = b.length === 2 && Math.abs(b[0].a - (nowM + 30)) < .01 && Math.abs(b[0].b - (nowM + 80)) < .01 &&
+          Math.abs(b[1].a - (nowM + 200)) < .01 && Math.abs(fb.done - (nowM + 222)) < .01 && fb.doneHi > fb.done;
+        return { ok: ok, detail: b.map(function (x) { return Math.round(x.a - nowM) + "–" + Math.round(x.b - nowM); }).join(", ") + " min from now" };
+      });
+      tryCheck("agree", "free/busy: inside 5:00 and 17+ apart does not hold you; within 16 does", function () {
+        var blow = mk("d", { period: 4, clockSec: 120, hs: 45, as: 10, margin: 35, c5: nowM, end: nowM + 9 });
+        var live = mk("e", { period: 4, clockSec: 120, hs: 22, as: 10, margin: 12, c5: nowM, end: nowM + 14 });
+        var f1 = F.freeBusy([blow], nowM), f2 = F.freeBusy([live], nowM);
+        return { ok: f1.busy.length === 0 && f2.busy.length === 1 && Math.abs(f2.busy[0].a - nowM) < .01 };
+      });
+      tryCheck("agree", "free/busy: an un-kicked stream is left out unless it is the pill's game", function () {
+        var s = mk("f", { state: "pre", period: 0, chans: ["ESPN+"], margin: 0, c5: nowM + 180, end: nowM + 198, conf: "sched" });
+        return { ok: F.freeBusy([s], nowM).busy.length === 0 && F.freeBusy([s], nowM, [s]).busy.length === 1 };
+      });
+      tryCheck("agree", "timeline block, stub, row line and free/busy all print the same 5:00 and final", function () {
+        var st = document.getElementById("stage"), sa = document.getElementById("stepAway");
+        if (!st || !sa) return { ok: false, detail: "no stage" };
+        var keep = { games: F.ST.games, err: F.ST.err, fin: F.S.showFinal };
+        try {
+          var L = mk("__L", { c5: nowM + 33, end: nowM + 53 });
+          var Z = mk("__Z", { state: "post", kick: nowM - 240, c5: null, end: null, fin: nowM - 25, finEst: false, conf: "final", chans: ["FOX"] });
+          F.S.showFinal = true; F.ST.err = null; F.ST.games = [L, Z]; F.setEst([L, Z]); F.renderGuide();
+          var edge = function (id) { var el = st.querySelector('.g[data-id="' + id + '"]');
+            return F.ST.t0 + (parseFloat(el.style.left) + parseFloat(el.style.width)) / F.ST.ppm; };
+          var eL = edge("__L"), eZ = edge("__Z"), stub = (st.querySelector(".gx b") || {}).textContent;
+          var c5 = F.hhmm12(L.c5), en = F.hhmm12(L.end), row = (H.crunchEst("__L") || {}).txt || "", plan = sa.textContent.replace(/\s+/g, " ");
+          var bad = [];
+          if (Math.abs(eL - L.end) > .6) bad.push("live block ends " + F.hhmm12(eL) + ", final " + en);
+          if (Math.abs(eZ - Z.fin) > .6 || eZ > nowM + .6) bad.push("finished block ends " + F.hhmm12(eZ) + ", ended " + F.hhmm12(Z.fin));
+          if (stub !== en) bad.push("stub " + stub);
+          if (row.indexOf("5:00 ≈" + c5) < 0 || row.indexOf("end ≈" + en) < 0) bad.push("row: " + row);
+          if (plan.indexOf(c5 + "–" + en) < 0) bad.push("plan: " + plan.slice(0, 90));
+          return { ok: !bad.length, detail: bad.length ? bad.join("; ") : "5:00 " + c5 + " · final " + en };
+        } finally {
+          F.S.showFinal = keep.fin; F.ST.games = keep.games; F.ST.err = keep.err; F.setEst(keep.games);
+          try { F.renderGuide(); } catch (e) {}
+        }
+      });
+    }
 
     /* --- 13. kickoff: the model's clock starts when the ball is kicked --- */
     {
