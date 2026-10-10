@@ -674,6 +674,7 @@ footer#notes b{color:#8496ac;font-weight:600}
   <label>Boost per ranked team (top 5 = full)<input type="number" id="rankB" step="0.05" min="0"></label>
   <label>Weight by closeness + rank<input type="checkbox" id="useComp"></label>
   <label>Minimum window to bother with (min)<input type="number" id="lunch" min="10" max="180" step="5" value="30"></label>
+  <label>Worst break worth showing (heat)<input type="number" id="winHeat" min="0" max="3" step="0.1" value="1.5"></label>
   <div class="hint" style="grid-column:1/-1">Direct game checks: <span id="directStat">idle</span>.
     Late and stuck games are also checked one at a time against ESPN's small per-game record,
     because the full scoreboard can lag the broadcast by minutes. The fresher answer wins.</div>
@@ -2076,7 +2077,7 @@ var VIEW = {
 "use strict";
 /* ============================ config ============================ */
 const DEF={tz:"America/Chicago",fit:true,zoom:2,showEmpty:true,showFinal:true,doCfb:true,doNfl:true,poll:45,
-  p_ota:1.00,p_gstream:0.85,p_cable:0.70,p_stream:0.55,p_slow:0.35,
+  p_ota:1.00,p_gstream:0.85,p_cable:0.70,p_stream:0.55,p_slow:0.35,winHeat:1.5,
   rankB:0.15,useComp:true,crunch:12,lunch:30};
 const S=Object.assign({},DEF,JSON.parse(localStorage.getItem("tvg.cfg2")||"{}"));
 const saveCfg=()=>localStorage.setItem("tvg.cfg2",JSON.stringify(S));
@@ -3005,10 +3006,6 @@ function crunchNow(G){
    minus what leaving costs — an hour and a half that misses one stream beats
    twenty-five clear minutes, which is the judgement the old sum-of-heat ranking
    got backwards. */
-/* Minutes of freedom one missed ending is worth giving up, per unit of game weight:
-   per heat point: a certain one-score finish over the air (1.2) costs 48; a typical
-   un-kicked ESPN+ game (~0.5) about 20. */
-const AWAY_MIN=40;
 /* ---- break windows ----
    A game HOLDS you from the earliest its crunch could start to the latest it could
    end: the 5th percentile of its 5:00 time through the 95th percentile of its final
@@ -3019,7 +3016,10 @@ const AWAY_MIN=40;
    holds are offered too — same kind of edges, a game's 95% end to another's 5% start
    — each priced on the heat scale. Games under 0.1 point are blank on that scale
    and hold nobody. */
-const HOLD_MIN_W=0.10,WIN_COST_CAP=3.0,WIN_MAX=6;
+const HOLD_MIN_W=0.10,WIN_MAX=6,WIN_STEP=0.25;
+/* The worst break worth a card (Settings, default 1.5 on the heat scale). At 2-plus
+   "quite a few games are ending" — that is not a break, however long it is. */
+const winCap=()=>{const v=+S.winHeat;return v>=0&&v<=3?v:DEF.winHeat;};
 function holdOf(g){
   if(g.state==="post"||g.c5==null||!(g.w>=HOLD_MIN_W))return null;
   const sg=sigOf(g),end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
@@ -3040,9 +3040,10 @@ function breakWindows(G,from,minLen){
     return{g,sg,inside:h.lo<-1e8,end:g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch};});
   /* P(crunch has started by each possible end), P(game is over by each possible start) */
   const Fc=ends.map(e=>meta.map(m=>m.inside?1:endCDF(e.lo,m.g.c5,m.sg)));
-  const TIERS=[.5,1,2,WIN_COST_CAP],all=[];
+  /* quarter-point heat bands: per start, the longest window in each band */
+  const CAP=winCap(),band=c=>Math.ceil(Math.max(c,1e-9)/WIN_STEP),all=[];
   for(const st of starts){
-    const Fe=meta.map(m=>endCDF(st.t,m.end,m.sg)),isNow=st.g===null;
+    const Fe=meta.map(m=>endCDF(st.t,m.end,m.sg));
     let best={};                                   // longest window per tier from this start
     for(let j=0;j<ends.length;j++){
       const e=ends[j].lo,len=e-st.t;
@@ -3053,9 +3054,9 @@ function breakWindows(G,from,minLen){
         const pr=Fc[j][k]-Fe[k];
         if(pr>0){cost+=meta[k].g.w*pr;if(pr>=.15)skip.push({g:meta[k].g,pr});}
       }
-      if(cost>WIN_COST_CAP)break;                  // only grows as the end moves out
-      if(len<(isNow?Math.min(minLen,5):minLen))continue;
-      const key=held===0?"c":"t"+TIERS.findIndex(x=>cost<=x);
+      if(cost>CAP)break;                           // only grows as the end moves out
+      if(len<minLen)continue;                      // a "Now" window too: the pill covers the short ones
+      const key=held===0?"c":"t"+band(cost);
       best[key]={t:st.t,end:e,cost,clear:held===0,skip,from:st.g,to:ends[j].g};
     }
     for(const k in best)all.push(best[k]);
@@ -3064,21 +3065,18 @@ function breakWindows(G,from,minLen){
   const keep=all.filter(w=>!all.some(v=>v!==w&&v.t<=w.t+1e-6&&v.end>=w.end-1e-6&&v.cost<=w.cost+1e-9&&
     (v.end-v.t>w.end-w.t+1e-6||v.cost<w.cost-1e-9)));
   keep.forEach(w=>{w.mins=Math.round(w.end-w.t);
-    w.close=w.skip.reduce((a,x)=>a+(x.g.p8||0)*x.pr,0);w.score=(w.end-w.t)-w.cost*AWAY_MIN;});
-  /* every clear gap first; then the cheapest ways to make more, best value first,
-     dropping any that mostly repeats a window already chosen at the same or lower cost */
-  const picked=keep.filter(w=>w.clear).sort((a,b)=>(b.end-b.t)-(a.end-a.t)).slice(0,WIN_MAX);
-  const tier=w=>TIERS.findIndex(x=>w.cost<=x);
-  const rest=keep.filter(w=>!w.clear).sort((a,b)=>tier(a)-tier(b)||b.score-a.score);
-  for(const w of rest){
+    w.close=w.skip.reduce((a,x)=>a+(x.g.p8||0)*x.pr,0);});
+  /* Quiet beats long. Clear gaps are placed first (longest first); then priced
+     windows strictly from the lowest heat band up, the longer one only within the same
+     quarter-point band — thirty free minutes always outrank fifty at heat 2.
+     The row never shows two windows that overlap ("Now–1:39p" beside "Now–1:54p" is
+     one break listed twice), so anything touching a window already placed is skipped
+     and, of two overlapping options, the quieter one is the one shown. */
+  const picked=[],tier=w=>w.clear?0:band(w.cost);
+  const order=keep.slice().sort((a,b)=>tier(a)-tier(b)||(b.end-b.t)-(a.end-a.t));
+  for(const w of order){
     if(picked.length>=WIN_MAX)break;
-    let covered=0;
-    const dup=picked.some(p=>{const ov=Math.min(p.end,w.end)-Math.max(p.t,w.t);
-      if(ov>0&&p.cost<=w.cost)covered+=ov;
-      return ov>0&&((p.cost<=w.cost&&ov>=.5*(w.end-w.t))||ov>.7*(w.end-w.t)||(ov>.7*(p.end-p.t)&&p.cost>=w.cost));});
-    /* Two windows already on the board plus the real game between them is not a new
-       choice. Joined across something close to free (0.5 points or less), it is. */
-    if(!dup&&!(w.cost>.5&&covered>.6*(w.end-w.t)))picked.push(w);
+    if(picked.every(p=>w.t>=p.end-1e-6||w.end<=p.t+1e-6))picked.push(w);
   }
   return picked.sort((a,b)=>a.t-b.t||a.end-b.end);
 }
@@ -3110,7 +3108,7 @@ function windowsPane(H,G,t0,n){
     if(last==null||g.c5>last){last=g.c5;lastF=g.end;}}
   const tail=last==null?"":` <span>· last 5:00 ${hhmm12(last)}${lastF!=null?" · final "+hhmm12(lastF):""}</span>`;
   cards.sort((a,b)=>a.t-b.t);
-  if(!cards.length)cards.push({b:"No window",i:"—",j:G.some(g=>g.state!=="post")?"nothing under heat 3":"no games left"});
+  if(!cards.length)cards.push({b:"No break",i:"—",j:G.some(g=>g.state!=="post")?`nothing ${S.lunch}+ min under heat ${winCap().toFixed(1)}`:"no games left"});
   return `<div class="pane"><h2>Your day${tail}</h2><div class="win">`+
     cards.map(c=>`<div${c.tip?` title="${esc(c.tip)}"`:""} style="${c.clear?"border-color:#2f6b41":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
     `</div></div>`;
@@ -3265,7 +3263,7 @@ function todayYMD(){const p={};for(const x of fmtr(S.tz).formatToParts(new Date(
   return d.toISOString().slice(0,10);}
 
 const FIELDS=["tz","fit","zoom","showEmpty","showFinal","p_ota","p_gstream","p_cable",
-  "p_stream","p_slow","rankB","useComp","lunch"];
+  "p_stream","p_slow","rankB","useComp","lunch","winHeat"];
 /* The header answers "when do I need to be back", so it always reports today,
    even while the timeline below is parked on another date. */
 let CR={at:null,min:null,kind:"none",label:"",games:[]};
@@ -5059,12 +5057,31 @@ HUB.start();
         var ok = W.length === 2 && W.every(function (w, i) { return Math.abs(w.t - want[i][0]) < .01 && Math.abs(w.end - want[i][1]) < .01 && w.clear; });
         return { ok: ok, detail: W.map(function (w) { return "+" + (w.t - nowB).toFixed(1) + "→+" + (w.end - nowB).toFixed(1); }).join(", ") + " min" };
       });
-      tryCheck("day", "a 20-point USA game in the middle of a gap: both clear halves, and the long one that sits through it", function () {
-        var A = bg("A", nowB + 61, nowB + 83), M = bg("M", nowB + 150, nowB + 168, { chans: ["USA"], hs: 30, as: 10, margin: 20 }), B = bg("B", nowB + 260, nowB + 281);
-        var W = F.breakWindows([A, M, B], nowB, 15), clear = W.filter(function (w) { return w.clear; }), paid = W.filter(function (w) { return !w.clear; });
-        var sg = F.sigOf(A), long = paid.filter(function (w) { return Math.abs(w.t - F.q95(A.end, sg)) < .01 && Math.abs(w.end - F.q05(B.c5, sg)) < .01; })[0];
-        return { ok: clear.length === 3 && !!long && long.skip.length === 1 && long.skip[0].g === M && long.cost > .8 * M.w && long.cost < M.w + .1,
-          detail: clear.length + " clear, " + paid.length + " priced; long one skips " + (long ? long.cost.toFixed(2) : "?") + " pts" };
+      tryCheck("day", "no two windows overlap: one Now window, the cheaper of two that share an edge", function () {
+        /* the 1:31p case: a faint game and a real one both coming up, and an evening gap
+           with a cheap game inside it */
+        var G = [bg("f", nowB + 16, nowB + 34, { chans: ["USA"], hs: 35, as: 10, margin: 25 }), bg("r", nowB + 60, nowB + 80),
+          bg("a", nowB + 150, nowB + 170), bg("m", nowB + 262, nowB + 280, { chans: ["USA"], hs: 30, as: 10, margin: 20 }), bg("b", nowB + 345, nowB + 366)];
+        var W = F.breakWindows(G, nowB, 20), bad = [];
+        for (var i = 0; i < W.length; i++) for (var j = i + 1; j < W.length; j++)
+          if (W[i].t < W[j].end - 1e-6 && W[j].t < W[i].end - 1e-6) bad.push(i + "/" + j);
+        var nowN = W.filter(function (w) { return w.from === null; }).length;
+        return { ok: !bad.length && nowN <= 1 && W.length >= 3, detail: W.map(function (w) { return "+" + Math.round(w.t - nowB) + "→+" + Math.round(w.end - nowB) + (w.clear ? " clear" : " " + w.cost.toFixed(2)); }).join(", ") };
+      });
+      tryCheck("day", "quiet beats long: 30 clear minutes are shown, 50 minutes at heat 2 are not — even with the cap lifted", function () {
+        /* A ends; a 31-minute clear gap; then two ranked one-score FOX games (≈2.4 points)
+           whose holds a longer window would have to sit through */
+        var hot = { chans: ["FOX"], ar: 3, hr: 5 }, sgm = 5;
+        var A = bg("A", nowB + 20, nowB + 40), X = bg("X", nowB + 40 + 2.5975 * sgm + 31 + 1.5341 * sgm, nowB + 140, hot), Y = bg("Y", X.c5 + 1, nowB + 141, hot),
+          Z = bg("Z", nowB + 40 + 2.5975 * sgm + 52 + 1.5341 * sgm, nowB + 200);
+        var keep = F.S.winHeat, r = {};
+        try {
+          [1.5, 3].forEach(function (cap) { F.S.winHeat = cap; r[cap] = F.breakWindows([A, X, Y, Z], nowB + 45, 30); });
+        } finally { F.S.winHeat = keep; }
+        var gap = function (W) { return W.filter(function (w) { return w.clear && Math.abs(w.end - w.t - 31) < .2; }).length === 1; };
+        var long = function (W) { return W.filter(function (w) { return !w.clear && w.end - w.t > 45; }).length; };
+        return { ok: gap(r[1.5]) && gap(r[3]) && long(r[1.5]) === 0 && long(r[3]) === 0 && r[1.5].every(function (w) { return w.cost <= 1.5 + 1e-9; }),
+          detail: [1.5, 3].map(function (c) { return "cap " + c + ": " + r[c].map(function (w) { return Math.round(w.end - w.t) + "m " + (w.clear ? "clear" : w.cost.toFixed(1)); }).join(", "); }).join(" | ") };
       });
       tryCheck("day", "windows move when the estimate moves, and never outrank the cap or repeat each other", function () {
         var A = bg("A", nowB + 61, nowB + 83), B = bg("B", nowB + 203, nowB + 224);
@@ -5073,7 +5090,7 @@ HUB.start();
         var w2 = F.breakWindows([A, B], nowB, 30)[1];
         var many = []; for (var i = 0; i < 40; i++) many.push(bg("m" + i, nowB + 40 + i * 9, nowB + 60 + i * 9, { chans: [i % 3 ? "ESPN+" : "FOX"] }));
         var W = F.breakWindows(many, nowB, 20);
-        return { ok: Math.abs((w2.t - w1.t) - 7) < .01 && Math.abs((w2.end - w1.end) + 4) < .01 && W.length <= 6 && W.every(function (w) { return w.cost <= 3 + 1e-9; }),
+        return { ok: Math.abs((w2.t - w1.t) - 7) < .01 && Math.abs((w2.end - w1.end) + 4) < .01 && W.length <= 6 && W.every(function (w, i) { return w.cost <= 1.5 + 1e-9 && (i === 0 || w.t >= W[i - 1].end - 1e-6); }),
           detail: "start +" + (w2.t - w1.t).toFixed(1) + ", end " + (w2.end - w1.end).toFixed(1) + "; 40 overlapping games → " + W.length + " windows" };
       });
     }
