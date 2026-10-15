@@ -3038,12 +3038,15 @@ function crunchNow(G){
    holds are offered too — same kind of edges, a game's 95% end to another's 5% start
    — each priced on the heat scale. Games under 0.1 point are blank on that scale
    and hold nobody. */
-const HOLD_MIN_W=0.10,WIN_MAX=6,WIN_STEP=0.25;
+/* A game holds you only if it is worth 0.5 heat points or more — the top of J's
+   "close to free" band (USA up 18 is 0.17). Below that it neither ends a free
+   stretch nor sets "Free until". A game inside its last 5:00 and 17+ apart is done. */
+const HOLD_MIN_W=0.50,WIN_MAX=6,WIN_STEP=0.25;
 /* The worst break worth a card (Settings, default 1.5 on the heat scale). At 2-plus
    "quite a few games are ending" — that is not a break, however long it is. */
 const winCap=()=>{const v=+S.winHeat;return v>=0&&v<=3?v:DEF.winHeat;};
 function holdOf(g){
-  if(g.state==="post"||g.c5==null||!(g.w>=HOLD_MIN_W))return null;
+  if(g.state==="post"||g.c5==null||!(g.w>=HOLD_MIN_W)||decided(g))return null;
   const end=g.end!=null?Math.max(g.end,g.c5+3):g.c5+S.crunch;
   const inside=g.state==="in"&&(g.crunch||g.period>4||(g.period-1)*900+(900-g.clockSec)>=CRUNCH_EG);
   return{lo:inside?-1e9:c5Lo(g),hi:q95(end,sigOf(g,end)),g};
@@ -3128,8 +3131,10 @@ function windowsPane(H,G,t0,n){
   let last=null,lastF=null;
   for(const g of G){if(g.state==="post"||g.c5==null)continue;
     if(last==null||g.c5>last){last=g.c5;lastF=g.end;}}
-  const tail=last==null?"":` <span>· last 5:00 ${hhmm12(last)}${lastF!=null?" · final "+hhmm12(lastF):""}</span>`;
+  const tail=last==null?"":` <span>· last 5:00 ≈${hhmm12(last)}${lastF!=null?" · final ≈"+hhmm12(lastF):""}</span>`;
   cards.sort((a,b)=>a.t-b.t);
+  const anyHold=G.some(g=>holdOf(g));
+  if(!cards.length&&!anyHold&&G.some(g=>g.state!=="post"))cards.push({clear:true,b:today?"Free rest of day":"Nothing to be back for",i:"—",j:"no game left worth 0.5+ heat"});
   if(!cards.length)cards.push({b:"No break",i:"—",j:G.some(g=>g.state!=="post")?`nothing ${S.lunch}+ min under heat ${winCap().toFixed(1)}`:"no games left"});
   return `<div class="pane"><h2>Your day${tail}</h2><div class="win">`+
     cards.map(c=>`<div${c.tip?` title="${esc(c.tip)}"`:""} style="${c.clear?"border-color:#2f6b41":""}"><b>${c.b}</b><i>${c.i}</i><u>${c.j||""}</u></div>`).join("")+
@@ -3295,24 +3300,25 @@ function durTxt(mins){
   mins=Math.max(0,Math.round(mins));
   return mins<60?mins+"m":Math.floor(mins/60)+"h"+String(mins%60).padStart(2,"0")+"m";
 }
+/* "Free until" is the start of the first hold — exactly where a "Now–" break window
+   ends, from the same holdOf(): the earliest a game worth being back for could reach
+   5:00 (5th percentile), never earlier than now. It used to print the point estimate
+   of 5:00 from its own eligibility rule, so the header said 10:13p while the window
+   under it said 9:53p for the same game. The point estimate rides in the tooltip. */
 function nextCrunch(games,dayStart,now){
   const live=games.filter(x=>x.state==="in"&&x.crunch);
   if(live.length)return{at:Date.now(),min:now,kind:"now",games:live};
   let best=null,bestG=null;
   for(const x of games){
-    const t=crunchETA(x,now);
-    if(t==null)continue;
-    if(best===null||t<best){best=t;bestG=x;}
+    if(x.w==null)x.w=gameWeight(x);
+    const h=holdOf(x);if(!h)continue;
+    const t=Math.max(now,h.lo);
+    if(best===null||t<best-1e-9||(Math.abs(t-best)<1e-9&&x.c5<bestG.c5)){best=t;bestG=x;}
   }
-  if(best!==null)return{at:dayStart+best*6e4,min:best,kind:"live",games:[bestG]};
-  for(const x of games){
-    const t=crunchScheduled(x,now);
-    if(t==null)continue;
-    if(best===null||t<best){best=t;bestG=x;}
-  }
-  if(best!==null)return{at:dayStart+best*6e4,min:best,kind:"sched",games:[bestG]};
-  return{at:null,min:null,kind:"none",games:[]};
+  if(best===null)return{at:null,min:null,kind:"none",games:[]};
+  return{at:dayStart+best*6e4,min:best,kind:bestG.state==="pre"?"sched":"live",games:[bestG]};
 }
+window.__FC.nextCrunch=(G,ds,n)=>nextCrunch(G,ds,n);
 function updateCrunch(games,dayStart,now){
   CR=nextCrunch(games,dayStart,now);
   paintCrunch();
@@ -3328,8 +3334,8 @@ function paintCrunch(){
     return;
   }
   if(CR.kind==="none"||CR.at==null){
-    el.textContent="Free all day";el.className="pill crunch";
-    el.title="Nothing on today's slate is projected to reach 5:00 of the fourth inside 16 points.";
+    el.textContent="Free rest of day";el.className="pill crunch";
+    el.title="No game left today is worth half a heat point or more — nothing to be back for.";
     return;
   }
   const mins=Math.round((CR.at-Date.now())/6e4),x=CR.games[0];
@@ -3337,12 +3343,13 @@ function paintCrunch(){
      table and the axis — a header that reads a different clock from the page
      underneath it is worse than no header at all */
   const clock=hhmm12(CR.min);
-  el.textContent=mins<=0?`Crunch now`:`Free until ${clock} · ${durTxt(mins)}`;
-  el.className="pill crunch"+(CR.kind==="sched"?" sched":mins<=15?" hot":mins<=45?" soon":"");
-  el.title=(CR.kind==="sched"
-      ? `${nameOf(x)} hasn't kicked — this is when it would reach 5:00 of the fourth, if it is close`
-      : `${nameOf(x)} projected to reach 5:00 of the fourth (currently ${x.margin} apart)`)
-    +`\n${x.chans[0]} · projected from the same pace model as the endings table`;
+  /* inside a game's range but not yet at 5:00: you should be back, it is not crunch yet */
+  el.textContent=mins<=0?`Back now · 5:00 ≈${hhmm12(x.c5)}`:`Free until ${clock} · ${durTxt(mins)}`;
+  el.className="pill crunch"+(mins<=0?" hot":CR.kind==="sched"?" sched":mins<=15?" hot":mins<=45?" soon":"");
+  el.title=`${nameOf(x)} (${x.chans[0]}) — earliest it could reach 5:00 of the fourth (5%): ${clock}.`+
+    `\nEstimate ${hhmm12(x.c5)}, 90% range ${hhmm12(c5Lo(x))}–${hhmm12(c5Hi(x))}.`+
+    (CR.kind==="sched"?" Not kicked yet.":` Now ${x.as}-${x.hs}, ${x.margin} apart.`)+
+    `\nSame edge as the "Now–" break window below.`;
 }
 setInterval(paintCrunch,1000);
 function airStatus(){
@@ -5030,11 +5037,14 @@ HUB.start();
         return { ok: pre(1) > pre(28) * 1.5 && pre(1) < one && q2 > q4b * 1.2,
           detail: "pre −1 " + pre(1).toFixed(2) + " · pre −28 " + pre(28).toFixed(2) + " · Q2 by 20 " + q2.toFixed(2) + " · Q4 by 20 " + q4b.toFixed(2) + " · Q4 by 4 " + one.toFixed(2) };
       });
-      if (F.crunchETA) tryCheck("priority", "pill follows closeness, not channel", function () {
+      if (F.nextCrunch) tryCheck("priority", "pill follows heat points, not channel", function () {
         var cbsBlow = mk("p1", { period: 4, clockSec: 600, chans: ["CBS"], hs: 45, as: 10, margin: 35 });
         var strClose = mk("p2", { period: 3, clockSec: 600, chans: ["SWAC TV"], hs: 20, as: 14, margin: 6 });
         var reach = mk("p3", { period: 2, clockSec: 600, chans: ["ESPN+"], hs: 27, as: 7, margin: 20 });
-        return { ok: F.crunchETA(cbsBlow, nowM) === null && F.crunchETA(strClose, nowM) != null && F.crunchETA(reach, nowM) != null };
+        [cbsBlow, strClose, reach].forEach(function (g, i) { g.now = nowM; g.c5 = nowM + 30 + i; g.end = g.c5 + 20; g.w = null; });
+        var pick = function (G) { var r = F.nextCrunch(G, F.ST.dayStart, nowM); return r.games[0] ? r.games[0].id : "none"; };
+        return { ok: pick([cbsBlow]) === "none" && pick([strClose]) === "p2" && pick([reach]) === "p3",
+          detail: "CBS 45-10 Q4 → " + pick([cbsBlow]) + " · SWAC TV by 6 → " + pick([strClose]) + " · ESPN+ Q2 by 20 → " + pick([reach]) };
       });
       tryCheck("agree", "timeline block, stub, row line and day cards all print the same 5:00 and final", function () {
         var st = document.getElementById("stage"), sa = document.getElementById("stepAway");
@@ -5053,7 +5063,7 @@ HUB.start();
           if (Math.abs(eZ - Z.fin) > .6 || eZ > nowM + .6) bad.push("finished block ends " + F.hhmm12(eZ) + ", ended " + F.hhmm12(Z.fin));
           if (stub !== en) bad.push("stub " + stub);
           if (row.indexOf("5:00 ≈" + c5) < 0 || row.indexOf("end ≈" + en) < 0) bad.push("row: " + row);
-          if (plan.indexOf("last 5:00 " + c5) < 0 || plan.indexOf("final " + en) < 0) bad.push("day pane: " + plan.slice(0, 90));
+          if (plan.indexOf("last 5:00 ≈" + c5) < 0 || plan.indexOf("final ≈" + en) < 0) bad.push("day pane: " + plan.slice(0, 90));
           if (sa.querySelectorAll(".win > div").length > 6) bad.push("more than six cards");
           return { ok: !bad.length, detail: bad.length ? bad.join("; ") : "5:00 " + c5 + " · final " + en };
         } finally {
@@ -5085,6 +5095,16 @@ HUB.start();
         } finally { F.setEst(F.ST.games); }
       });
     }
+
+    if (F.nextCrunch && F.breakWindows && F.c5Lo && H) tryCheck("agree", "header pill \"Free until\" = end of the \"Now–\" window = 5% edge of that game", function () {
+      var nw = (Date.now() - F.ST.dayStart) / 6e4;
+      var mn = { id: "mnf", sport: "nfl", group: "nfl", kick: nw + 13, state: "pre", period: 0, clockSec: 900, hs: 0, as: 0, margin: 0, chans: ["ESPN", "ABC"],
+        conf: "sched", now: nw, c5: nw + 191, end: nw + 220, spread: 3, line: { side: "home" }, home: { abbreviation: "H" }, away: { abbreviation: "A" } };
+      mn.tier = H.tierOf("ESPN"); mn.w = F.gameWeight(mn);
+      var r = F.nextCrunch([mn], F.ST.dayStart, nw), W = F.breakWindows([mn], nw, 30), lo = F.c5Lo(mn);
+      return { ok: W.length === 1 && W[0].from === null && Math.abs(r.min - lo) < 1e-9 && Math.abs(W[0].end - lo) < 1e-9,
+        detail: "pill " + F.hhmm12(r.min) + " · window ends " + (W[0] ? F.hhmm12(W[0].end) : "—") + " · estimate " + F.hhmm12(mn.c5) };
+    });
 
     /* --- 12c. break windows: 95% end of one game → 5% crunch start of the next --- */
     if (F.breakWindows && F.q05 && F.q95 && F.gameWeight && H) {
